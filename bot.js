@@ -12,7 +12,7 @@ const provider = new WebSocketProvider(process.env.BASE_RPC);
 // ZKP2P Escrow contract on Base
 const contractAddress = '0xca38607d85e8f6294dc10728669605e6664c2d70';
 
-// ABI with exact event definitions from the contract - ADDED IntentPruned
+// ABI with exact event definitions from the contract - Removed IntentCancelled and DepositClosed
 const abi = [
   `event IntentSignaled(
     bytes32 indexed intentHash,
@@ -35,14 +35,6 @@ const abi = [
     uint256 sustainabilityFee,
     uint256 verifierFee
   )`,
-  `event DepositClosed(
-    bytes32 indexed intentHash,
-    uint256 indexed depositId
-  )`,
-  `event IntentCancelled(
-    bytes32 indexed intentHash,
-    uint256 indexed depositId
-  )`,
   `event IntentPruned(
     bytes32 indexed intentHash,
     uint256 indexed depositId
@@ -52,6 +44,7 @@ const abi = [
 const iface = new Interface(abi);
 let trackedDepositIds = new Set(); // Changed to Set for multiple IDs
 const depositStates = new Map(); // Track state of each deposit
+const pendingPrunedEvents = new Map(); // Track IntentPruned events temporarily
 
 // Telegram commands
 bot.onText(/\/deposit (.+)/, (msg, match) => {
@@ -108,8 +101,6 @@ bot.onText(/\/list/, (msg) => {
     const state = depositStates.get(id);
     const status = state ? state.status : 'tracking';
     const emoji = status === 'fulfilled' ? '✅' : 
-                  status === 'closed' ? '🔒' : 
-                  status === 'cancelled' ? '🔴' :
                   status === 'pruned' ? '🟠' : '👀';
     message += `${emoji} \`${id}\` - ${status}\n`;
   });
@@ -172,17 +163,6 @@ const fiatCurrencyMap = {
 };
 
 const getFiatCode = (hash) => fiatCurrencyMap[hash.toLowerCase()] || '❓ Unknown';
-
-// Function to determine if deposit was completed or cancelled
-const determineDepositOutcome = (intentHash, depositId) => {
-  // Check if we have a previous IntentFulfilled for this deposit
-  const state = depositStates.get(depositId);
-  if (state && state.status === 'fulfilled') {
-    return 'completed';
-  }
-  // If no IntentFulfilled was recorded, it's likely cancelled
-  return 'cancelled';
-};
 
 // Log listener with improved error handling
 provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
@@ -265,11 +245,18 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
     if (name === 'IntentFulfilled') {
       const { intentHash, depositId, verifier, owner, to, amount, sustainabilityFee, verifierFee } = parsed.args;
       const id = Number(depositId);
+      const txHash = log.transactionHash;
       console.log('🧪 IntentFulfilled depositId:', id);
 
       if (!trackedDepositIds.has(id)) {
         console.log('🚫 Ignored — depositId not being tracked.');
         return;
+      }
+
+      // Cancel any pending IntentPruned notification for this transaction
+      if (pendingPrunedEvents.has(txHash)) {
+        console.log('🔄 Cancelling IntentPruned notification - order was fulfilled');
+        pendingPrunedEvents.delete(txHash);
       }
 
       // Update deposit state
@@ -292,33 +279,7 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
       bot.sendMessage(chatId, message, { parse_mode: 'Markdown', disable_web_page_preview: true });
     }
 
-    if (name === 'IntentCancelled') {
-      const { intentHash, depositId } = parsed.args;
-      const id = Number(depositId);
-      console.log('🧪 IntentCancelled depositId:', id);
-
-      if (!trackedDepositIds.has(id)) {
-        console.log('🚫 Ignored — depositId not being tracked.');
-        return;
-      }
-
-      // Update deposit state
-      depositStates.set(id, { status: 'cancelled', intentHash });
-
-      const message = `
-🔴 *Intent Cancelled*
-• *Deposit ID:* \`${id}\`
-• *Intent Hash:* \`${intentHash}\`
-• *Block:* ${log.blockNumber}
-• *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
-
-❌ *Order was cancelled*
-`.trim();
-
-      bot.sendMessage(chatId, message, { parse_mode: 'Markdown', disable_web_page_preview: true });
-    }
-
-    // NEW: Handle IntentPruned event
+    // Handle IntentPruned event - delay notification to check for IntentFulfilled
     if (name === 'IntentPruned') {
       const { intentHash, depositId } = parsed.args;
       const id = Number(depositId);
@@ -329,46 +290,36 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
         return;
       }
 
-      // Update deposit state
-      depositStates.set(id, { status: 'pruned', intentHash });
+      // Store the pruned event temporarily with transaction hash
+      const txHash = log.transactionHash;
+      pendingPrunedEvents.set(txHash, {
+        intentHash,
+        depositId: id,
+        blockNumber: log.blockNumber,
+        txHash
+      });
 
-      const message = `
+      // Set a delay to check if IntentFulfilled comes in the same transaction
+      setTimeout(() => {
+        const prunedEvent = pendingPrunedEvents.get(txHash);
+        if (prunedEvent) {
+          // IntentPruned event was not followed by IntentFulfilled, so it's a cancellation
+          depositStates.set(id, { status: 'pruned', intentHash });
+
+          const message = `
 🟠 *Intent Cancelled*
 • *Deposit ID:* \`${id}\`
 • *Intent Hash:* \`${intentHash}\`
-• *Block:* ${log.blockNumber}
-• *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
+• *Block:* ${prunedEvent.blockNumber}
+• *Tx:* [View on BaseScan](${txLink(prunedEvent.txHash)})
 
 *Intent was cancelled*
 `.trim();
 
-      bot.sendMessage(chatId, message, { parse_mode: 'Markdown', disable_web_page_preview: true });
-    }
-
-    if (name === 'DepositClosed') {
-      const { intentHash, depositId } = parsed.args;
-      const id = Number(depositId);
-      console.log('🧪 DepositClosed depositId:', id);
-
-      if (!trackedDepositIds.has(id)) {
-        console.log('🚫 Ignored — depositId not being tracked.');
-        return;
-      }
-
-      // Update deposit state
-      depositStates.set(id, { status: 'closed', intentHash });
-
-      const message = `
-🔒 *Deposit Closed*
-• *Deposit ID:* \`${id}\`
-• *Intent Hash:* \`${intentHash}\`
-• *Block:* ${log.blockNumber}
-• *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
-
-✅ *Deposit finalized*
-`.trim();
-
-      bot.sendMessage(chatId, message, { parse_mode: 'Markdown', disable_web_page_preview: true });
+          bot.sendMessage(chatId, message, { parse_mode: 'Markdown', disable_web_page_preview: true });
+          pendingPrunedEvents.delete(txHash);
+        }
+      }, 2000); // Wait 2 seconds for potential IntentFulfilled
     }
 
   } catch (err) {
