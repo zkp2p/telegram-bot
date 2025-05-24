@@ -46,6 +46,20 @@ let trackedDepositIds = new Set(); // Changed to Set for multiple IDs
 const depositStates = new Map(); // Track state of each deposit
 const pendingPrunedEvents = new Map(); // Track IntentPruned events temporarily
 
+// Verifier address to platform mapping
+const verifierMapping = {
+  '0x76d33a33068d86016b806df02376ddbb23dd3703': { platform: 'CashApp', isUsdOnly: true },
+  '0x9a733b55a875d0db4915c6b36350b24f8ab99df5': { platform: 'Venmo', isUsdOnly: true },
+  '0xaa5a1b62b01781e789c900d616300717cd9a41ab': { platform: 'Revolut', isUsdOnly: false },
+  '0xff0149799631d7a5bde2e7ea9b306c42b3d9a9ca': { platform: 'Wise', isUsdOnly: false },
+  '0x1783f040783c0827fb64d128ece548d9b3613ad5': { platform: 'Zelle', isUsdOnly: true }
+};
+
+const getPlatformName = (verifierAddress) => {
+  const mapping = verifierMapping[verifierAddress.toLowerCase()];
+  return mapping ? mapping.platform : `Unknown (${verifierAddress.slice(0, 6)}...${verifierAddress.slice(-4)})`;
+};
+
 // Telegram commands
 bot.onText(/\/deposit (.+)/, (msg, match) => {
   const idsString = match[1];
@@ -134,6 +148,7 @@ bot.onText(/\/help/, (msg) => {
 const formatUSDC = (amount) => (Number(amount) / 1e6).toFixed(2);
 const formatTimestamp = (ts) => new Date(Number(ts) * 1000).toUTCString();
 const txLink = (hash) => `https://basescan.org/tx/${hash}`;
+const depositLink = (id) => `https://www.zkp2p.xyz/deposit/${id}`;
 
 const fiatCurrencyMap = {
   '0x4dab77a640748de8588de6834d814a344372b205265984b969f3e97060955bfa': 'AED',
@@ -163,6 +178,24 @@ const fiatCurrencyMap = {
 };
 
 const getFiatCode = (hash) => fiatCurrencyMap[hash.toLowerCase()] || '❓ Unknown';
+
+// Format conversion rate with label
+const formatConversionRate = (conversionRate, fiatCode) => {
+  const rate = (Number(conversionRate) / 1e18).toFixed(6);
+  return `${rate} ${fiatCode} / USDC`;
+};
+
+// Create inline keyboard with deposit link
+const createDepositKeyboard = (depositId) => {
+  return {
+    inline_keyboard: [[
+      {
+        text: `🔗 View Deposit ${depositId}`,
+        url: depositLink(depositId)
+      }
+    ]]
+  };
+};
 
 // Log listener with improved error handling
 provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
@@ -198,7 +231,11 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
 • *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
 `.trim();
           
-          bot.sendMessage(chatId, message, { parse_mode: 'Markdown', disable_web_page_preview: true });
+          bot.sendMessage(chatId, message, { 
+            parse_mode: 'Markdown', 
+            disable_web_page_preview: true,
+            reply_markup: createDepositKeyboard(topicDepositId)
+          });
         }
       }
       return;
@@ -214,6 +251,9 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
       const id = Number(depositId);
       const fiatCode = getFiatCode(fiatCurrency);
       const fiatAmount = ((Number(amount) / 1e6) * (Number(conversionRate) / 1e18)).toFixed(2);
+      const platformName = getPlatformName(verifier);
+      const formattedRate = formatConversionRate(conversionRate, fiatCode);
+      
       console.log('🧪 IntentSignaled depositId:', id);
 
       if (!trackedDepositIds.has(id)) {
@@ -225,27 +265,33 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
       depositStates.set(id, { status: 'signaled', intentHash });
 
       const message = `
-🟡 *Intent Signaled*
+🟡 *Order Created*
 • *Deposit ID:* \`${id}\`
-• *Intent Hash:* \`${intentHash}\`
+• *Order ID:* \`${intentHash}\`
+• *Platform:* ${platformName}
 • *Owner:* \`${owner}\`
-• *Verifier:* \`${verifier}\`
 • *To:* \`${to}\`
 • *Amount:* ${formatUSDC(amount)} USDC
 • *Fiat Amount:* ${fiatAmount} ${fiatCode} 
-• *Conversion Rate:* \`${conversionRate}\`
+• *Rate:* ${formattedRate}
 • *Time:* ${formatTimestamp(timestamp)}
 • *Block:* ${log.blockNumber}
 • *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
 `.trim();
 
-      bot.sendMessage(chatId, message, { parse_mode: 'Markdown', disable_web_page_preview: true });
+      bot.sendMessage(chatId, message, { 
+        parse_mode: 'Markdown', 
+        disable_web_page_preview: true,
+        reply_markup: createDepositKeyboard(id)
+      });
     }
 
     if (name === 'IntentFulfilled') {
       const { intentHash, depositId, verifier, owner, to, amount, sustainabilityFee, verifierFee } = parsed.args;
       const id = Number(depositId);
       const txHash = log.transactionHash;
+      const platformName = getPlatformName(verifier);
+      
       console.log('🧪 IntentFulfilled depositId:', id);
 
       if (!trackedDepositIds.has(id)) {
@@ -263,11 +309,11 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
       depositStates.set(id, { status: 'fulfilled', intentHash });
 
       const message = `
-🟢 *Intent Fulfilled*
+🟢 *Order Fulfilled*
 • *Deposit ID:* \`${id}\`
-• *Intent Hash:* \`${intentHash}\`
+• *Order ID:* \`${intentHash}\`
+• *Platform:* ${platformName}
 • *Owner:* \`${owner}\`
-• *Verifier:* \`${verifier}\`
 • *To:* \`${to}\`
 • *Amount:* ${formatUSDC(amount)} USDC
 • *Sustainability Fee:* ${formatUSDC(sustainabilityFee)} USDC
@@ -276,7 +322,11 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
 • *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
 `.trim();
 
-      bot.sendMessage(chatId, message, { parse_mode: 'Markdown', disable_web_page_preview: true });
+      bot.sendMessage(chatId, message, { 
+        parse_mode: 'Markdown', 
+        disable_web_page_preview: true,
+        reply_markup: createDepositKeyboard(id)
+      });
     }
 
     // Handle IntentPruned event - delay notification to check for IntentFulfilled
@@ -307,16 +357,20 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
           depositStates.set(id, { status: 'pruned', intentHash });
 
           const message = `
-🟠 *Intent Cancelled*
+🟠 *Order Cancelled*
 • *Deposit ID:* \`${id}\`
-• *Intent Hash:* \`${intentHash}\`
+• *Order ID:* \`${intentHash}\`
 • *Block:* ${prunedEvent.blockNumber}
 • *Tx:* [View on BaseScan](${txLink(prunedEvent.txHash)})
 
-*Intent was cancelled*
+*Order was cancelled*
 `.trim();
 
-          bot.sendMessage(chatId, message, { parse_mode: 'Markdown', disable_web_page_preview: true });
+          bot.sendMessage(chatId, message, { 
+            parse_mode: 'Markdown', 
+            disable_web_page_preview: true,
+            reply_markup: createDepositKeyboard(id)
+          });
           pendingPrunedEvents.delete(txHash);
         }
       }, 2000); // Wait 2 seconds for potential IntentFulfilled
