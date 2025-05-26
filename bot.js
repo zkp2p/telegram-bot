@@ -4,7 +4,6 @@ const TelegramBot = require('node-telegram-bot-api');
 
 // Telegram setup
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
-const chatId = process.env.TELEGRAM_CHAT_ID;
 
 // Base WebSocket RPC (Alchemy or others)
 const provider = new WebSocketProvider(process.env.BASE_RPC);
@@ -12,7 +11,7 @@ const provider = new WebSocketProvider(process.env.BASE_RPC);
 // ZKP2P Escrow contract on Base
 const contractAddress = '0xca38607d85e8f6294dc10728669605e6664c2d70';
 
-// ABI with exact event definitions from the contract - Removed IntentCancelled and DepositClosed
+// ABI with exact event definitions from the contract
 const abi = [
   `event IntentSignaled(
     bytes32 indexed intentHash,
@@ -42,9 +41,11 @@ const abi = [
 ];
 
 const iface = new Interface(abi);
-let trackedDepositIds = new Set(); // Changed to Set for multiple IDs
-const depositStates = new Map(); // Track state of each deposit
-const pendingPrunedEvents = new Map(); // Track IntentPruned events temporarily
+
+// PER-USER TRACKING - Store each user's tracked deposits separately
+const userTrackedDeposits = new Map(); // chatId -> Set of depositIds
+const userDepositStates = new Map();   // chatId -> Map of depositId -> state
+const pendingPrunedEvents = new Map(); // Still global for transaction handling
 
 // Verifier address to platform mapping
 const verifierMapping = {
@@ -60,75 +61,118 @@ const getPlatformName = (verifierAddress) => {
   return mapping ? mapping.platform : `Unknown (${verifierAddress.slice(0, 6)}...${verifierAddress.slice(-4)})`;
 };
 
-// Telegram commands
+// Helper functions to manage per-user tracking
+const getUserTrackedDeposits = (chatId) => {
+  if (!userTrackedDeposits.has(chatId)) {
+    userTrackedDeposits.set(chatId, new Set());
+  }
+  return userTrackedDeposits.get(chatId);
+};
+
+const getUserDepositStates = (chatId) => {
+  if (!userDepositStates.has(chatId)) {
+    userDepositStates.set(chatId, new Map());
+  }
+  return userDepositStates.get(chatId);
+};
+
+// Get all users tracking a specific deposit ID
+const getUsersTrackingDeposit = (depositId) => {
+  const trackingUsers = [];
+  for (const [chatId, trackedDeposits] of userTrackedDeposits.entries()) {
+    if (trackedDeposits.has(depositId)) {
+      trackingUsers.push(chatId);
+    }
+  }
+  return trackingUsers;
+};
+
+// Telegram commands - now per-user
 bot.onText(/\/deposit (.+)/, (msg, match) => {
+  const chatId = msg.chat.id;
   const idsString = match[1];
   const newIds = idsString.split(/[,\s]+/).map(id => parseInt(id.trim())).filter(id => !isNaN(id));
   
   if (newIds.length === 0) {
-    bot.sendMessage(msg.chat.id, `❌ No valid deposit IDs provided. Use: /deposit 123 or /deposit 123,456,789`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `❌ No valid deposit IDs provided. Use: /deposit 123 or /deposit 123,456,789`, { parse_mode: 'Markdown' });
     return;
   }
   
+  const userDeposits = getUserTrackedDeposits(chatId);
+  const userStates = getUserDepositStates(chatId);
+  
   newIds.forEach(id => {
-    trackedDepositIds.add(id);
-    if (!depositStates.has(id)) {
-      depositStates.set(id, { status: 'tracking' });
+    userDeposits.add(id);
+    if (!userStates.has(id)) {
+      userStates.set(id, { status: 'tracking' });
     }
   });
   
-  const idsArray = Array.from(trackedDepositIds).sort((a, b) => a - b);
-  bot.sendMessage(msg.chat.id, `✅ Now tracking deposit IDs: \`${idsArray.join(', ')}\``, { parse_mode: 'Markdown' });
+  const idsArray = Array.from(userDeposits).sort((a, b) => a - b);
+  bot.sendMessage(chatId, `✅ Now tracking deposit IDs: \`${idsArray.join(', ')}\``, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/remove (.+)/, (msg, match) => {
+  const chatId = msg.chat.id;
   const idsString = match[1];
   const idsToRemove = idsString.split(/[,\s]+/).map(id => parseInt(id.trim())).filter(id => !isNaN(id));
   
   if (idsToRemove.length === 0) {
-    bot.sendMessage(msg.chat.id, `❌ No valid deposit IDs provided. Use: /remove 123 or /remove 123,456,789`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `❌ No valid deposit IDs provided. Use: /remove 123 or /remove 123,456,789`, { parse_mode: 'Markdown' });
     return;
   }
   
+  const userDeposits = getUserTrackedDeposits(chatId);
+  const userStates = getUserDepositStates(chatId);
+  
   idsToRemove.forEach(id => {
-    trackedDepositIds.delete(id);
-    depositStates.delete(id);
+    userDeposits.delete(id);
+    userStates.delete(id);
   });
   
-  const remainingIds = Array.from(trackedDepositIds).sort((a, b) => a - b);
+  const remainingIds = Array.from(userDeposits).sort((a, b) => a - b);
   if (remainingIds.length > 0) {
-    bot.sendMessage(msg.chat.id, `✅ Removed specified IDs. Still tracking: \`${remainingIds.join(', ')}\``, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `✅ Removed specified IDs. Still tracking: \`${remainingIds.join(', ')}\``, { parse_mode: 'Markdown' });
   } else {
-    bot.sendMessage(msg.chat.id, `✅ Removed specified IDs. No deposits being tracked.`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `✅ Removed specified IDs. No deposits being tracked.`, { parse_mode: 'Markdown' });
   }
 });
 
 bot.onText(/\/list/, (msg) => {
-  const idsArray = Array.from(trackedDepositIds).sort((a, b) => a - b);
+  const chatId = msg.chat.id;
+  const userDeposits = getUserTrackedDeposits(chatId);
+  const userStates = getUserDepositStates(chatId);
+  
+  const idsArray = Array.from(userDeposits).sort((a, b) => a - b);
   if (idsArray.length === 0) {
-    bot.sendMessage(msg.chat.id, `📋 No deposits currently being tracked.`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `📋 No deposits currently being tracked.`, { parse_mode: 'Markdown' });
     return;
   }
   
   let message = `📋 *Currently tracking ${idsArray.length} deposits:*\n\n`;
   idsArray.forEach(id => {
-    const state = depositStates.get(id);
+    const state = userStates.get(id);
     const status = state ? state.status : 'tracking';
     const emoji = status === 'fulfilled' ? '✅' : 
                   status === 'pruned' ? '🟠' : '👀';
     message += `${emoji} \`${id}\` - ${status}\n`;
   });
   
-  bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+  bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/clearall/, (msg) => {
-  trackedDepositIds.clear();
-  depositStates.clear();
-  bot.sendMessage(msg.chat.id, `🗑️ Cleared all tracked deposit IDs.`, { parse_mode: 'Markdown' });
+  const chatId = msg.chat.id;
+  const userDeposits = getUserTrackedDeposits(chatId);
+  const userStates = getUserDepositStates(chatId);
+  
+  userDeposits.clear();
+  userStates.clear();
+  bot.sendMessage(chatId, `🗑️ Cleared all tracked deposit IDs.`, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/help/, (msg) => {
+  const chatId = msg.chat.id;
   const helpMessage = `
 🤖 *ZKP2P Tracker Commands:*
 
@@ -139,9 +183,11 @@ bot.onText(/\/help/, (msg) => {
 • \`/list\` - Show all tracked deposits and their status
 • \`/clearall\` - Stop tracking all deposits
 • \`/help\` - Show this help message
+
+*Note: Each user has their own tracking list*
 `.trim();
   
-  bot.sendMessage(msg.chat.id, helpMessage, { parse_mode: 'Markdown' });
+  bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
 
 // Helpers
@@ -179,13 +225,11 @@ const fiatCurrencyMap = {
 
 const getFiatCode = (hash) => fiatCurrencyMap[hash.toLowerCase()] || '❓ Unknown';
 
-// Format conversion rate with label
 const formatConversionRate = (conversionRate, fiatCode) => {
   const rate = (Number(conversionRate) / 1e18).toFixed(6);
   return `${rate} ${fiatCode} / USDC`;
 };
 
-// Create inline keyboard with deposit link
 const createDepositKeyboard = (depositId) => {
   return {
     inline_keyboard: [[
@@ -197,32 +241,30 @@ const createDepositKeyboard = (depositId) => {
   };
 };
 
-// Log listener with improved error handling
+// MODIFIED: Log listener now sends to individual users
 provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
   console.log('\n📦 Raw log received:');
   console.log(log);
 
   try {
-    // Try to parse the log with our interface
     const parsed = iface.parseLog({ 
       data: log.data, 
       topics: log.topics 
     });
     
-    // Only proceed if parsing was successful
     if (!parsed) {
       console.log('⚠️ Log format did not match our ABI');
       console.log('📝 Event signature:', log.topics[0]);
       
-      // Extract deposit ID directly from topics if possible (fallback)
       if (log.topics.length >= 3) {
         const topicDepositId = parseInt(log.topics[2], 16);
         console.log('📊 Extracted deposit ID from topic:', topicDepositId);
         
-        if (trackedDepositIds.has(topicDepositId)) {
-          console.log('⚠️ This is for a tracked deposit but we cannot fully parse it');
+        // Send to all users tracking this deposit
+        const trackingUsers = getUsersTrackingDeposit(topicDepositId);
+        if (trackingUsers.length > 0) {
+          console.log(`⚠️ Sending unrecognized event to ${trackingUsers.length} users`);
           
-          // Send minimal notification for unrecognized events for tracked deposits
           const message = `
 ⚠️ *Unrecognized Event for Tracked Deposit*
 • *Deposit ID:* \`${topicDepositId}\`
@@ -231,10 +273,13 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
 • *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
 `.trim();
           
-          bot.sendMessage(chatId, message, { 
-            parse_mode: 'Markdown', 
-            disable_web_page_preview: true,
-            reply_markup: createDepositKeyboard(topicDepositId)
+          // Send to each tracking user
+          trackingUsers.forEach(chatId => {
+            bot.sendMessage(chatId, message, { 
+              parse_mode: 'Markdown', 
+              disable_web_page_preview: true,
+              reply_markup: createDepositKeyboard(topicDepositId)
+            });
           });
         }
       }
@@ -256,13 +301,14 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
       
       console.log('🧪 IntentSignaled depositId:', id);
 
-      if (!trackedDepositIds.has(id)) {
-        console.log('🚫 Ignored — depositId not being tracked.');
+      // Find users tracking this deposit
+      const trackingUsers = getUsersTrackingDeposit(id);
+      if (trackingUsers.length === 0) {
+        console.log('🚫 Ignored — no users tracking this depositId.');
         return;
       }
 
-      // Update deposit state
-      depositStates.set(id, { status: 'signaled', intentHash });
+      console.log(`📤 Sending to ${trackingUsers.length} users tracking deposit ${id}`);
 
       const message = `
 🟡 *Order Created*
@@ -279,10 +325,16 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
 • *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
 `.trim();
 
-      bot.sendMessage(chatId, message, { 
-        parse_mode: 'Markdown', 
-        disable_web_page_preview: true,
-        reply_markup: createDepositKeyboard(id)
+      // Send to each user tracking this deposit
+      trackingUsers.forEach(chatId => {
+        const userStates = getUserDepositStates(chatId);
+        userStates.set(id, { status: 'signaled', intentHash });
+        
+        bot.sendMessage(chatId, message, { 
+          parse_mode: 'Markdown', 
+          disable_web_page_preview: true,
+          reply_markup: createDepositKeyboard(id)
+        });
       });
     }
 
@@ -294,8 +346,9 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
       
       console.log('🧪 IntentFulfilled depositId:', id);
 
-      if (!trackedDepositIds.has(id)) {
-        console.log('🚫 Ignored — depositId not being tracked.');
+      const trackingUsers = getUsersTrackingDeposit(id);
+      if (trackingUsers.length === 0) {
+        console.log('🚫 Ignored — no users tracking this depositId.');
         return;
       }
 
@@ -305,8 +358,7 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
         pendingPrunedEvents.delete(txHash);
       }
 
-      // Update deposit state
-      depositStates.set(id, { status: 'fulfilled', intentHash });
+      console.log(`📤 Sending fulfillment to ${trackingUsers.length} users tracking deposit ${id}`);
 
       const message = `
 🟢 *Order Fulfilled*
@@ -322,40 +374,43 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
 • *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
 `.trim();
 
-      bot.sendMessage(chatId, message, { 
-        parse_mode: 'Markdown', 
-        disable_web_page_preview: true,
-        reply_markup: createDepositKeyboard(id)
+      trackingUsers.forEach(chatId => {
+        const userStates = getUserDepositStates(chatId);
+        userStates.set(id, { status: 'fulfilled', intentHash });
+        
+        bot.sendMessage(chatId, message, { 
+          parse_mode: 'Markdown', 
+          disable_web_page_preview: true,
+          reply_markup: createDepositKeyboard(id)
+        });
       });
     }
 
-    // Handle IntentPruned event - delay notification to check for IntentFulfilled
     if (name === 'IntentPruned') {
       const { intentHash, depositId } = parsed.args;
       const id = Number(depositId);
       console.log('🧪 IntentPruned depositId:', id);
 
-      if (!trackedDepositIds.has(id)) {
-        console.log('🚫 Ignored — depositId not being tracked.');
+      const trackingUsers = getUsersTrackingDeposit(id);
+      if (trackingUsers.length === 0) {
+        console.log('🚫 Ignored — no users tracking this depositId.');
         return;
       }
 
-      // Store the pruned event temporarily with transaction hash
       const txHash = log.transactionHash;
       pendingPrunedEvents.set(txHash, {
         intentHash,
         depositId: id,
         blockNumber: log.blockNumber,
-        txHash
+        txHash,
+        trackingUsers // Store which users to notify
       });
 
-      // Set a delay to check if IntentFulfilled comes in the same transaction
       setTimeout(() => {
         const prunedEvent = pendingPrunedEvents.get(txHash);
         if (prunedEvent) {
-          // IntentPruned event was not followed by IntentFulfilled, so it's a cancellation
-          depositStates.set(id, { status: 'pruned', intentHash });
-
+          console.log(`📤 Sending cancellation to ${prunedEvent.trackingUsers.length} users tracking deposit ${id}`);
+          
           const message = `
 🟠 *Order Cancelled*
 • *Deposit ID:* \`${id}\`
@@ -366,41 +421,41 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
 *Order was cancelled*
 `.trim();
 
-          bot.sendMessage(chatId, message, { 
-            parse_mode: 'Markdown', 
-            disable_web_page_preview: true,
-            reply_markup: createDepositKeyboard(id)
+          prunedEvent.trackingUsers.forEach(chatId => {
+            const userStates = getUserDepositStates(chatId);
+            userStates.set(id, { status: 'pruned', intentHash });
+            
+            bot.sendMessage(chatId, message, { 
+              parse_mode: 'Markdown', 
+              disable_web_page_preview: true,
+              reply_markup: createDepositKeyboard(id)
+            });
           });
+          
           pendingPrunedEvents.delete(txHash);
         }
-      }, 2000); // Wait 2 seconds for potential IntentFulfilled
+      }, 2000);
     }
 
   } catch (err) {
     console.error('❌ Failed to parse log:', err.message);
     console.log('👀 Raw log (unparsed):', log);
-    
-    // Additional information to help debug
     console.log('📝 Topics received:', log.topics);
     console.log('📝 First topic (event signature):', log.topics[0]);
-    
-    // Instead of crashing, we'll just log the error and continue
     console.log('🔄 Continuing to listen for other events...');
   }
 });
 
 // Add startup message
-console.log('🤖 ZKP2P Telegram Bot Started');
+console.log('🤖 ZKP2P Telegram Bot Started (Per-User Tracking)');
 console.log('🔍 Listening for contract events...');
 console.log(`📡 Contract: ${contractAddress}`);
 
 // Add basic error handlers to prevent crashing
 provider.on('error', (error) => {
   console.error('❌ WebSocket provider error:', error);
-  // Could implement reconnection logic here
 });
 
 process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught exception:', error);
-  // Keep the process running
 });
