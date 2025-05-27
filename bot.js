@@ -15,6 +15,9 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 // Exchange rate API configuration
 const EXCHANGE_API_URL = `https://v6.exchangerate-api.com/v6/${process.env.EXCHANGE_API_KEY}/latest/USD`;
 
+const depositAmounts = new Map(); // Store deposit amounts temporarily
+
+
 // Database helper functions
 class DatabaseManager {
   // Initialize user if not exists
@@ -342,7 +345,46 @@ class DatabaseManager {
     
     if (error) console.error('Error logging sniper alert:', error);
   }
+
+  async storeDepositAmount(depositId, amount) {
+  // Store in memory for quick access
+    depositAmounts.set(Number(depositId), Number(amount));
+  
+  // Also store in database for persistence
+  const { error } = await supabase
+    .from('deposit_amounts')
+    .upsert({ 
+      deposit_id: Number(depositId),
+      amount: Number(amount),
+      created_at: new Date().toISOString()
+    }, { 
+      onConflict: 'deposit_id' 
+    });
+  
+    if (error) console.error('Error storing deposit amount:', error);
+  }
+
+  async getDepositAmount(depositId) {
+  // Try memory first
+    const memoryAmount = depositAmounts.get(Number(depositId));
+    if (memoryAmount) return memoryAmount;
+  
+  // Fall back to database
+    const { data, error } = await supabase
+      .from('deposit_amounts')
+      .select('amount')
+      .eq('deposit_id', Number(depositId))
+      .single();
+  
+    if (error) {
+      console.error('Error getting deposit amount:', error);
+      return 0;
+    }
+  
+    return data?.amount || 0;
+  }
 }
+
 
 const db = new DatabaseManager();
 
@@ -662,7 +704,7 @@ async function checkSniperOpportunity(depositId, depositAmount, currencyHash, co
       
       const formattedAmount = (Number(depositAmount) / 1e6).toFixed(0);
       const message = `
-🎯 **SNIPER ALERT - ${currencyCode}**
+🎯 *SNIPER ALERT - ${currencyCode}*
 📊 New Deposit #${depositId}: ${formattedAmount} USDC
 💰 Deposit Rate: ${depositRate.toFixed(4)} ${currencyCode}/USD
 📈 Market Rate: ${marketRate.toFixed(4)} ${currencyCode}/USD  
@@ -1083,14 +1125,54 @@ const handleContractEvent = async (log) => {
       }, 2000);
     }
 
-    // NEW: Handle DepositCurrencyAdded for sniper functionality
-    if (name === 'DepositCurrencyAdded') {
-      const { depositId, currency, conversionRate } = parsed.args;
-      console.log('🎯 DepositCurrencyAdded detected:', Number(depositId));
+    if (name === 'DepositReceived') {
+  const { depositId, depositor, token, amount, intentAmountRange } = parsed.args;
+  const id = Number(depositId);
+  const usdcAmount = Number(amount);
+  
+  console.log(`💰 DepositReceived: ${id} with ${formatUSDC(amount)} USDC`);
+  
+  // Store the deposit amount for later sniper use
+  await db.storeDepositAmount(id, usdcAmount);
+  
+  // Optional: notify users tracking this specific deposit
+  const interestedUsers = await db.getUsersInterestedInDeposit(id);
+  if (interestedUsers.length > 0) {
+    const message = `
+💰 *New Deposit Created*
+- *Deposit ID:* \`${id}\`
+- *Amount:* ${formatUSDC(amount)} USDC
+- *Depositor:* \`${depositor}\`
+- *Block:* ${log.blockNumber}
+- *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
+`.trim();
+
+    for (const chatId of interestedUsers) {
+      await db.logEventNotification(chatId, id, 'deposit_received');
       
-      // Check for sniper opportunity
-      await checkSniperOpportunity(Number(depositId), 0, currency, conversionRate);
+      bot.sendMessage(chatId, message, { 
+        parse_mode: 'Markdown', 
+        disable_web_page_preview: true,
+        reply_markup: createDepositKeyboard(id)
+      });
     }
+  }
+}
+
+    // NEW: Handle DepositCurrencyAdded for sniper functionality
+  if (name === 'DepositCurrencyAdded') {
+    const { depositId, currency, conversionRate } = parsed.args;
+    const id = Number(depositId);
+    
+    console.log('🎯 DepositCurrencyAdded detected:', id);
+    
+    // Get the actual deposit amount
+    const depositAmount = await db.getDepositAmount(id);
+    console.log(`💰 Retrieved deposit amount: ${depositAmount} (${formatUSDC(depositAmount)} USDC)`);
+    
+    // Check for sniper opportunity with real amount
+    await checkSniperOpportunity(id, depositAmount, currency, conversionRate);
+  }
 
   } catch (err) {
     console.error('❌ Failed to parse log:', err.message);
