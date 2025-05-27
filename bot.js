@@ -1,9 +1,198 @@
 require('dotenv').config();
 const { WebSocketProvider, Interface } = require('ethers');
 const TelegramBot = require('node-telegram-bot-api');
+const { createClient } = require('@supabase/supabase-js');
+
+// Supabase setup
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
 
 // Telegram setup
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+
+// Database helper functions
+class DatabaseManager {
+  // Initialize user if not exists
+  async initUser(chatId, username = null, firstName = null, lastName = null) {
+    const { data, error } = await supabase
+      .from('users')
+      .upsert({ 
+        chat_id: chatId,
+        username: username,
+        first_name: firstName,
+        last_name: lastName,
+        last_active: new Date().toISOString() 
+      }, { 
+        onConflict: 'chat_id',
+        ignoreDuplicates: false 
+      });
+    
+    if (error) console.error('Error initializing user:', error);
+    return data;
+  }
+
+  // Get user's tracked deposits
+  async getUserDeposits(chatId) {
+    const { data, error } = await supabase
+      .from('user_deposits')
+      .select('deposit_id, status')
+      .eq('chat_id', chatId);
+    
+    if (error) {
+      console.error('Error fetching user deposits:', error);
+      return new Set();
+    }
+    
+    return new Set(data.map(row => row.deposit_id));
+  }
+
+  // Get user's deposit states
+  async getUserDepositStates(chatId) {
+    const { data, error } = await supabase
+      .from('user_deposits')
+      .select('deposit_id, status, intent_hash')
+      .eq('chat_id', chatId);
+    
+    if (error) {
+      console.error('Error fetching user deposit states:', error);
+      return new Map();
+    }
+    
+    const statesMap = new Map();
+    data.forEach(row => {
+      statesMap.set(row.deposit_id, {
+        status: row.status,
+        intentHash: row.intent_hash
+      });
+    });
+    
+    return statesMap;
+  }
+
+  // Add deposit for user
+  async addUserDeposit(chatId, depositId) {
+    const { error } = await supabase
+      .from('user_deposits')
+      .upsert({ 
+        chat_id: chatId, 
+        deposit_id: depositId,
+        status: 'tracking',
+        created_at: new Date().toISOString()
+      }, { 
+        onConflict: 'chat_id,deposit_id' 
+      });
+    
+    if (error) console.error('Error adding deposit:', error);
+  }
+
+  // Remove deposit for user
+  async removeUserDeposit(chatId, depositId) {
+    const { error } = await supabase
+      .from('user_deposits')
+      .delete()
+      .eq('chat_id', chatId)
+      .eq('deposit_id', depositId);
+    
+    if (error) console.error('Error removing deposit:', error);
+  }
+
+  // Update deposit status
+  async updateDepositStatus(chatId, depositId, status, intentHash = null) {
+    const updateData = { 
+      status: status,
+      updated_at: new Date().toISOString()
+    };
+    
+    if (intentHash) {
+      updateData.intent_hash = intentHash;
+    }
+
+    const { error } = await supabase
+      .from('user_deposits')
+      .update(updateData)
+      .eq('chat_id', chatId)
+      .eq('deposit_id', depositId);
+    
+    if (error) console.error('Error updating deposit status:', error);
+  }
+
+  // Get/Set listen all preference
+  async getUserListenAll(chatId) {
+    const { data, error } = await supabase
+      .from('user_settings')
+      .select('listen_all')
+      .eq('chat_id', chatId)
+      .single();
+    
+    if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
+      console.error('Error getting listen all:', error);
+    }
+    return data?.listen_all || false;
+  }
+
+  async setUserListenAll(chatId, listenAll) {
+    const { error } = await supabase
+      .from('user_settings')
+      .upsert({ 
+        chat_id: chatId, 
+        listen_all: listenAll,
+        updated_at: new Date().toISOString()
+      }, { 
+        onConflict: 'chat_id' 
+      });
+    
+    if (error) console.error('Error setting listen all:', error);
+  }
+
+  // Clear all user data
+  async clearUserData(chatId) {
+    const { error1 } = await supabase.from('user_deposits').delete().eq('chat_id', chatId);
+    const { error2 } = await supabase.from('user_settings').delete().eq('chat_id', chatId);
+    
+    if (error1) console.error('Error clearing user deposits:', error1);
+    if (error2) console.error('Error clearing user settings:', error2);
+  }
+
+  // Log event notification (for analytics)
+  async logEventNotification(chatId, depositId, eventType) {
+    const { error } = await supabase
+      .from('event_notifications')
+      .insert({
+        chat_id: chatId,
+        deposit_id: depositId,
+        event_type: eventType,
+        sent_at: new Date().toISOString()
+      });
+    
+    if (error) console.error('Error logging notification:', error);
+  }
+
+  // Get users interested in a deposit (for notifications)
+  async getUsersInterestedInDeposit(depositId) {
+    // Users listening to all deposits
+    const { data: allListeners } = await supabase
+      .from('user_settings')
+      .select('chat_id')
+      .eq('listen_all', true);
+    
+    // Users tracking specific deposit
+    const { data: specificTrackers } = await supabase
+      .from('user_deposits')
+      .select('chat_id')
+      .eq('deposit_id', depositId);
+    
+    const allUsers = new Set();
+    
+    allListeners?.forEach(user => allUsers.add(user.chat_id));
+    specificTrackers?.forEach(user => allUsers.add(user.chat_id));
+    
+    return Array.from(allUsers);
+  }
+}
+
+const db = new DatabaseManager();
 
 // Enhanced WebSocket Provider with reconnection
 class ResilientWebSocketProvider {
@@ -11,10 +200,10 @@ class ResilientWebSocketProvider {
     this.url = url;
     this.contractAddress = contractAddress;
     this.eventHandler = eventHandler;
-    this.reconnectDelay = 1000; // Start with 1 second
-    this.maxReconnectDelay = 30000; // Max 30 seconds
+    this.reconnectDelay = 1000;
+    this.maxReconnectDelay = 30000;
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 50; // Try 50 times before giving up
+    this.maxReconnectAttempts = 50;
     this.isConnecting = false;
     this.provider = null;
     
@@ -28,28 +217,21 @@ class ResilientWebSocketProvider {
     try {
       console.log(`🔌 Attempting WebSocket connection (attempt ${this.reconnectAttempts + 1})`);
       
-      // Clean up existing provider
       if (this.provider) {
         this.provider.removeAllListeners();
         this.provider.destroy?.();
       }
 
       this.provider = new WebSocketProvider(this.url);
-      
-      // Set up event listeners
       this.setupEventListeners();
-      
-      // Test connection
       await this.provider.getNetwork();
       
       console.log('✅ WebSocket connected successfully');
       
-      // Reset reconnect parameters on successful connection
       this.reconnectAttempts = 0;
       this.reconnectDelay = 1000;
       this.isConnecting = false;
       
-      // Set up contract event listening
       this.setupContractListening();
       
     } catch (error) {
@@ -70,7 +252,6 @@ class ResilientWebSocketProvider {
       this.scheduleReconnect();
     });
 
-    // Handle network changes
     this.provider.on('network', (newNetwork, oldNetwork) => {
       if (oldNetwork) {
         console.log('🌐 Network changed, reconnecting...');
@@ -113,7 +294,6 @@ class ResilientWebSocketProvider {
     }, delay);
   }
 
-  // Getter to access the current provider
   get currentProvider() {
     return this.provider;
   }
@@ -152,12 +332,7 @@ const abi = [
 ];
 
 const iface = new Interface(abi);
-
-// PER-USER TRACKING - Store each user's tracked deposits separately
-const userTrackedDeposits = new Map(); // chatId -> Set of depositIds
-const userDepositStates = new Map();   // chatId -> Map of depositId -> state
-const userListenAll = new Map();       // chatId -> boolean (whether user is listening to all)
-const pendingPrunedEvents = new Map(); // Still global for transaction handling
+const pendingPrunedEvents = new Map();
 
 // Verifier address to platform mapping
 const verifierMapping = {
@@ -173,70 +348,26 @@ const getPlatformName = (verifierAddress) => {
   return mapping ? mapping.platform : `Unknown (${verifierAddress.slice(0, 6)}...${verifierAddress.slice(-4)})`;
 };
 
-// Helper functions to manage per-user tracking
-const getUserTrackedDeposits = (chatId) => {
-  if (!userTrackedDeposits.has(chatId)) {
-    userTrackedDeposits.set(chatId, new Set());
-  }
-  return userTrackedDeposits.get(chatId);
-};
-
-const getUserDepositStates = (chatId) => {
-  if (!userDepositStates.has(chatId)) {
-    userDepositStates.set(chatId, new Map());
-  }
-  return userDepositStates.get(chatId);
-};
-
-const isUserListeningAll = (chatId) => {
-  return userListenAll.get(chatId) || false;
-};
-
-const setUserListenAll = (chatId, value) => {
-  userListenAll.set(chatId, value);
-};
-
-// Get all users tracking a specific deposit ID OR listening to all
-const getUsersInterestedInDeposit = (depositId) => {
-  const interestedUsers = [];
-  
-  // Users listening to all deposits
-  for (const [chatId, listenAll] of userListenAll.entries()) {
-    if (listenAll) {
-      interestedUsers.push(chatId);
-    }
-  }
-  
-  // Users specifically tracking this deposit
-  for (const [chatId, trackedDeposits] of userTrackedDeposits.entries()) {
-    if (trackedDeposits.has(depositId) && !interestedUsers.includes(chatId)) {
-      interestedUsers.push(chatId);
-    }
-  }
-  
-  return interestedUsers;
-};
-
-// Telegram commands - now per-user
-bot.onText(/\/deposit (.+)/, (msg, match) => {
+// Telegram commands - now using database
+bot.onText(/\/deposit (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const input = match[1].trim().toLowerCase();
   
-  // Handle /deposit all
+  // Initialize user
+  await db.initUser(chatId, msg.from.username, msg.from.first_name, msg.from.last_name);
+  
   if (input === 'all') {
-    setUserListenAll(chatId, true);
+    await db.setUserListenAll(chatId, true);
     bot.sendMessage(chatId, `🌍 *Now listening to ALL deposits!*\n\nYou will receive notifications for every event on every deposit.\n\nUse \`/deposit stop\` to stop listening to all deposits.`, { parse_mode: 'Markdown' });
     return;
   }
   
-  // Handle /deposit stop
   if (input === 'stop') {
-    setUserListenAll(chatId, false);
+    await db.setUserListenAll(chatId, false);
     bot.sendMessage(chatId, `🛑 *Stopped listening to all deposits.*\n\nYou will now only receive notifications for specifically tracked deposits.`, { parse_mode: 'Markdown' });
     return;
   }
   
-  // Handle specific deposit IDs
   const newIds = input.split(/[,\s]+/).map(id => parseInt(id.trim())).filter(id => !isNaN(id));
   
   if (newIds.length === 0) {
@@ -244,21 +375,16 @@ bot.onText(/\/deposit (.+)/, (msg, match) => {
     return;
   }
   
-  const userDeposits = getUserTrackedDeposits(chatId);
-  const userStates = getUserDepositStates(chatId);
+  for (const id of newIds) {
+    await db.addUserDeposit(chatId, id);
+  }
   
-  newIds.forEach(id => {
-    userDeposits.add(id);
-    if (!userStates.has(id)) {
-      userStates.set(id, { status: 'tracking' });
-    }
-  });
-  
+  const userDeposits = await db.getUserDeposits(chatId);
   const idsArray = Array.from(userDeposits).sort((a, b) => a - b);
   bot.sendMessage(chatId, `✅ Now tracking deposit IDs: \`${idsArray.join(', ')}\``, { parse_mode: 'Markdown' });
 });
 
-bot.onText(/\/remove (.+)/, (msg, match) => {
+bot.onText(/\/remove (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const idsString = match[1];
   const idsToRemove = idsString.split(/[,\s]+/).map(id => parseInt(id.trim())).filter(id => !isNaN(id));
@@ -268,15 +394,13 @@ bot.onText(/\/remove (.+)/, (msg, match) => {
     return;
   }
   
-  const userDeposits = getUserTrackedDeposits(chatId);
-  const userStates = getUserDepositStates(chatId);
+  for (const id of idsToRemove) {
+    await db.removeUserDeposit(chatId, id);
+  }
   
-  idsToRemove.forEach(id => {
-    userDeposits.delete(id);
-    userStates.delete(id);
-  });
-  
+  const userDeposits = await db.getUserDeposits(chatId);
   const remainingIds = Array.from(userDeposits).sort((a, b) => a - b);
+  
   if (remainingIds.length > 0) {
     bot.sendMessage(chatId, `✅ Removed specified IDs. Still tracking: \`${remainingIds.join(', ')}\``, { parse_mode: 'Markdown' });
   } else {
@@ -284,11 +408,11 @@ bot.onText(/\/remove (.+)/, (msg, match) => {
   }
 });
 
-bot.onText(/\/list/, (msg) => {
+bot.onText(/\/list/, async (msg) => {
   const chatId = msg.chat.id;
-  const userDeposits = getUserTrackedDeposits(chatId);
-  const userStates = getUserDepositStates(chatId);
-  const listeningAll = isUserListeningAll(chatId);
+  const userDeposits = await db.getUserDeposits(chatId);
+  const userStates = await db.getUserDepositStates(chatId);
+  const listeningAll = await db.getUserListenAll(chatId);
   
   let message = '';
   
@@ -313,32 +437,22 @@ bot.onText(/\/list/, (msg) => {
     });
   }
   
-  if (!listeningAll && idsArray.length === 0) {
-    message = `📋 No deposits currently being tracked.`;
-  }
-  
   bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 });
 
-bot.onText(/\/clearall/, (msg) => {
+bot.onText(/\/clearall/, async (msg) => {
   const chatId = msg.chat.id;
-  const userDeposits = getUserTrackedDeposits(chatId);
-  const userStates = getUserDepositStates(chatId);
-  
-  userDeposits.clear();
-  userStates.clear();
-  setUserListenAll(chatId, false);
-  
+  await db.clearUserData(chatId);
   bot.sendMessage(chatId, `🗑️ Cleared all tracked deposit IDs and stopped listening to all deposits.`, { parse_mode: 'Markdown' });
 });
 
-bot.onText(/\/status/, (msg) => {
+bot.onText(/\/status/, async (msg) => {
   const chatId = msg.chat.id;
   const isConnected = resilientProvider.currentProvider !== null;
   const statusEmoji = isConnected ? '🟢' : '🔴';
   const statusText = isConnected ? 'Connected' : 'Disconnected';
-  const listeningAll = isUserListeningAll(chatId);
-  const trackedCount = getUserTrackedDeposits(chatId).size;
+  const listeningAll = await db.getUserListenAll(chatId);
+  const trackedCount = (await db.getUserDeposits(chatId)).size;
   
   let message = `${statusEmoji} *WebSocket Status:* ${statusText}\n\n`;
   
@@ -373,7 +487,7 @@ bot.onText(/\/help/, (msg) => {
   bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
 
-// Helpers
+// Helper functions
 const formatUSDC = (amount) => (Number(amount) / 1e6).toFixed(2);
 const formatTimestamp = (ts) => new Date(Number(ts) * 1000).toUTCString();
 const txLink = (hash) => `https://basescan.org/tx/${hash}`;
@@ -424,7 +538,7 @@ const createDepositKeyboard = (depositId) => {
   };
 };
 
-// Event handler function
+// Event handler function - now using database
 const handleContractEvent = async (log) => {
   console.log('\n📦 Raw log received:');
   console.log(log);
@@ -443,8 +557,7 @@ const handleContractEvent = async (log) => {
         const topicDepositId = parseInt(log.topics[2], 16);
         console.log('📊 Extracted deposit ID from topic:', topicDepositId);
         
-        // Send to all users interested in this deposit
-        const interestedUsers = getUsersInterestedInDeposit(topicDepositId);
+        const interestedUsers = await db.getUsersInterestedInDeposit(topicDepositId);
         if (interestedUsers.length > 0) {
           console.log(`⚠️ Sending unrecognized event to ${interestedUsers.length} users`);
           
@@ -456,7 +569,6 @@ const handleContractEvent = async (log) => {
 • *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
 `.trim();
           
-          // Send to each interested user
           interestedUsers.forEach(chatId => {
             bot.sendMessage(chatId, message, { 
               parse_mode: 'Markdown', 
@@ -484,8 +596,7 @@ const handleContractEvent = async (log) => {
       
       console.log('🧪 IntentSignaled depositId:', id);
 
-      // Find users interested in this deposit
-      const interestedUsers = getUsersInterestedInDeposit(id);
+      const interestedUsers = await db.getUsersInterestedInDeposit(id);
       if (interestedUsers.length === 0) {
         console.log('🚫 Ignored — no users interested in this depositId.');
         return;
@@ -508,17 +619,16 @@ const handleContractEvent = async (log) => {
 • *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
 `.trim();
 
-      // Send to each interested user
-      interestedUsers.forEach(chatId => {
-        const userStates = getUserDepositStates(chatId);
-        userStates.set(id, { status: 'signaled', intentHash });
+      for (const chatId of interestedUsers) {
+        await db.updateDepositStatus(chatId, id, 'signaled', intentHash);
+        await db.logEventNotification(chatId, id, 'signaled');
         
         bot.sendMessage(chatId, message, { 
           parse_mode: 'Markdown', 
           disable_web_page_preview: true,
           reply_markup: createDepositKeyboard(id)
         });
-      });
+      }
     }
 
     if (name === 'IntentFulfilled') {
@@ -529,13 +639,12 @@ const handleContractEvent = async (log) => {
       
       console.log('🧪 IntentFulfilled depositId:', id);
 
-      const interestedUsers = getUsersInterestedInDeposit(id);
+      const interestedUsers = await db.getUsersInterestedInDeposit(id);
       if (interestedUsers.length === 0) {
         console.log('🚫 Ignored — no users interested in this depositId.');
         return;
       }
 
-      // Cancel any pending IntentPruned notification for this transaction
       if (pendingPrunedEvents.has(txHash)) {
         console.log('🔄 Cancelling IntentPruned notification - order was fulfilled');
         pendingPrunedEvents.delete(txHash);
@@ -557,16 +666,16 @@ const handleContractEvent = async (log) => {
 • *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
 `.trim();
 
-      interestedUsers.forEach(chatId => {
-        const userStates = getUserDepositStates(chatId);
-        userStates.set(id, { status: 'fulfilled', intentHash });
+      for (const chatId of interestedUsers) {
+        await db.updateDepositStatus(chatId, id, 'fulfilled', intentHash);
+        await db.logEventNotification(chatId, id, 'fulfilled');
         
         bot.sendMessage(chatId, message, { 
           parse_mode: 'Markdown', 
           disable_web_page_preview: true,
           reply_markup: createDepositKeyboard(id)
         });
-      });
+      }
     }
 
     if (name === 'IntentPruned') {
@@ -574,7 +683,7 @@ const handleContractEvent = async (log) => {
       const id = Number(depositId);
       console.log('🧪 IntentPruned depositId:', id);
 
-      const interestedUsers = getUsersInterestedInDeposit(id);
+      const interestedUsers = await db.getUsersInterestedInDeposit(id);
       if (interestedUsers.length === 0) {
         console.log('🚫 Ignored — no users interested in this depositId.');
         return;
@@ -586,10 +695,10 @@ const handleContractEvent = async (log) => {
         depositId: id,
         blockNumber: log.blockNumber,
         txHash,
-        interestedUsers // Store which users to notify
+        interestedUsers
       });
 
-      setTimeout(() => {
+      setTimeout(async () => {
         const prunedEvent = pendingPrunedEvents.get(txHash);
         if (prunedEvent) {
           console.log(`📤 Sending cancellation to ${prunedEvent.interestedUsers.length} users interested in deposit ${id}`);
@@ -604,16 +713,16 @@ const handleContractEvent = async (log) => {
 *Order was cancelled*
 `.trim();
 
-          prunedEvent.interestedUsers.forEach(chatId => {
-            const userStates = getUserDepositStates(chatId);
-            userStates.set(id, { status: 'pruned', intentHash });
+          for (const chatId of prunedEvent.interestedUsers) {
+            await db.updateDepositStatus(chatId, id, 'pruned', intentHash);
+            await db.logEventNotification(chatId, id, 'pruned');
             
             bot.sendMessage(chatId, message, { 
               parse_mode: 'Markdown', 
               disable_web_page_preview: true,
               reply_markup: createDepositKeyboard(id)
             });
-          });
+          }
           
           pendingPrunedEvents.delete(txHash);
         }
@@ -637,19 +746,17 @@ const resilientProvider = new ResilientWebSocketProvider(
 );
 
 // Add startup message
-console.log('🤖 ZKP2P Telegram Bot Started (Per-User Tracking with Auto-Reconnect)');
+console.log('🤖 ZKP2P Telegram Bot Started (Supabase Integration with Auto-Reconnect)');
 console.log('🔍 Listening for contract events...');
 console.log(`📡 Contract: ${contractAddress}`);
 
 // Enhanced error handlers
 process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught exception:', error);
-  // Don't exit, let reconnection handle recovery
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('❌ Unhandled rejection at:', promise, 'reason:', reason);
-  // Don't exit, let reconnection handle recovery
 });
 
 // Graceful shutdown
