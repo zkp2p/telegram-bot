@@ -270,7 +270,6 @@ class DatabaseManager {
   // Sniper-related database methods
 // Update these methods in your DatabaseManager class:
 async setUserSniper(chatId, currency, platform = null) {
-  // No deactivation logic at all - just insert a new active record
   const { error } = await supabase
     .from('user_snipers')
     .insert({
@@ -281,9 +280,13 @@ async setUserSniper(chatId, currency, platform = null) {
       created_at: new Date().toISOString()
     });
   
-  if (error) console.error('Error setting sniper:', error);
+  if (error) {
+    console.error('Error setting sniper:', error);
+    return false; // Return failure
+  }
+  return true; // Return success
 }
-
+  
 async removeUserSniper(chatId, currency = null, platform = null) {
   let query = supabase
     .from('user_snipers')
