@@ -509,22 +509,17 @@ class ResilientWebSocketProvider {
   }
 
   setupEventListeners() {
-    this.provider.on('error', (error) => {
-      console.error('❌ WebSocket error:', error.message);
-      this.scheduleReconnect();
-    });
-
-    this.provider.on('close', (code, reason) => {
+  if (this.provider._websocket) {
+    this.provider._websocket.on('close', (code, reason) => {
       console.log(`🔌 WebSocket closed: ${code} - ${reason}`);
       this.scheduleReconnect();
-    });
-
-    this.provider.on('network', (newNetwork, oldNetwork) => {
-      if (oldNetwork) {
-        console.log('🌐 Network changed, reconnecting...');
-        this.scheduleReconnect();
-      }
-    });
+      });
+  
+    this.provider._websocket.on('error', (error) => {
+      console.error('❌ WebSocket error:', error.message);
+      this.scheduleReconnect();
+      });
+    }
   }
 
   setupContractListening() {
