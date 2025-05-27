@@ -624,11 +624,11 @@ const pendingPrunedEvents = new Map();
 
 // Verifier address to platform mapping
 const verifierMapping = {
-  '0x76d33a33068d86016b806df02376ddbb23dd3703': { platform: 'CashApp', isUsdOnly: true },
-  '0x9a733b55a875d0db4915c6b36350b24f8ab99df5': { platform: 'Venmo', isUsdOnly: true },
-  '0xaa5a1b62b01781e789c900d616300717cd9a41ab': { platform: 'Revolut', isUsdOnly: false },
-  '0xff0149799631d7a5bde2e7ea9b306c42b3d9a9ca': { platform: 'Wise', isUsdOnly: false },
-  '0x1783f040783c0827fb64d128ece548d9b3613ad5': { platform: 'Zelle', isUsdOnly: true }
+  '0x76d33a33068d86016b806df02376ddbb23dd3703': { platform: 'cashapp', isUsdOnly: true },
+  '0x9a733b55a875d0db4915c6b36350b24f8ab99df5': { platform: 'venmo', isUsdOnly: true },
+  '0xaa5a1b62b01781e789c900d616300717cd9a41ab': { platform: 'revolut', isUsdOnly: false },
+  '0xff0149799631d7a5bde2e7ea9b306c42b3d9a9ca': { platform: 'wise', isUsdOnly: false },
+  '0x1783f040783c0827fb64d128ece548d9b3613ad5': { platform: 'zelle', isUsdOnly: true }
 };
 
 const getPlatformName = (verifierAddress) => {
