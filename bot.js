@@ -266,26 +266,6 @@ class DatabaseManager {
       popularDeposits: popularDeposits || []
     };
   }
-
-  // Sniper-related database methods
-// Update these methods in your DatabaseManager class:
-async setUserSniper(chatId, currency, platform = null) {
-  const { error } = await supabase
-    .from('user_snipers')
-    .insert({
-      chat_id: chatId,
-      currency: currency.toUpperCase(),
-      platform: platform ? platform.toLowerCase() : null,
-      is_active: true,
-      created_at: new Date().toISOString()
-    });
-  
-  if (error) {
-    console.error('Error setting sniper:', error);
-    return false; // Return failure
-  }
-  return true; // Return success
-}
   
 async removeUserSniper(chatId, currency = null, platform = null) {
   let query = supabase
