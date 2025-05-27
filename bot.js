@@ -307,7 +307,6 @@ async setUserSniper(chatId, currency, platform = null) {
 }
 
 async getUserSnipers(chatId) {
-  // Get snipers created in the last 30 days (or whatever timeframe)
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
   
@@ -333,6 +332,41 @@ async getUserSnipers(chatId) {
   });
   
   return Array.from(unique.values());
+}
+
+  async getUsersWithSniper(currency, platform = null) {
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  
+  let query = supabase
+    .from('user_snipers')
+    .select('chat_id, currency, platform, created_at')
+    .eq('currency', currency.toUpperCase())
+    .gte('created_at', thirtyDaysAgo.toISOString());
+  
+  // If platform is specified, match exactly OR get users with null platform (all platforms)
+  if (platform) {
+    // Get users who either specified this platform OR want all platforms (null)
+    query = query.or(`platform.eq.${platform.toLowerCase()},platform.is.null`);
+  }
+  
+  const { data, error } = await query;
+  
+  if (error) {
+    console.error('Error fetching users with sniper:', error);
+    return [];
+  }
+  
+  // Deduplicate by chat_id - if user has multiple entries, keep the newest
+  const userMap = new Map();
+  data.forEach(row => {
+    const existing = userMap.get(row.chat_id);
+    if (!existing || new Date(row.created_at) > new Date(existing.created_at)) {
+      userMap.set(row.chat_id, row);
+    }
+  });
+  
+  return Array.from(userMap.keys()); // Return just the chat IDs
 }
 
   async logSniperAlert(chatId, depositId, currency, depositRate, marketRate, percentageDiff) {
@@ -720,7 +754,7 @@ async function checkSniperOpportunity(depositId, depositAmount, currencyHash, co
   // Only alert if deposit offers better rate (lower rate = better for buyer)
   // Minimum .2% threshold
   if (percentageDiff >= 0.2) {
-    const interestedUsers = await db.getUsersWithSniper(currencyCode, platformName);
+    const interestedUsers = await db.getUserSnipers(currencyCode, platformName);
     
     if (interestedUsers.length > 0) {
       console.log(`🎯 SNIPER OPPORTUNITY! Alerting ${interestedUsers.length} users`);
