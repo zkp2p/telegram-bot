@@ -271,15 +271,27 @@ class DatabaseManager {
 // Update these methods in your DatabaseManager class:
 
 async setUserSniper(chatId, currency, platform = null) {
-  // First, deactivate any existing sniper for this currency/platform combo
-  await supabase
-    .from('user_snipers')
-    .update({ is_active: false, updated_at: new Date().toISOString() })
-    .eq('chat_id', chatId)
-    .eq('currency', currency.toUpperCase())
-    .eq('platform', platform ? platform.toLowerCase() : null);
+  // Smart deactivation logic
+  if (platform === null) {
+    // If setting "all platforms", deactivate ALL snipers for this currency
+    await supabase
+      .from('user_snipers')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('chat_id', chatId)
+      .eq('currency', currency.toUpperCase());
+  } else {
+    // If setting specific platform, deactivate:
+    // 1. Any "all platforms" sniper for this currency 
+    // 2. Any existing sniper for this specific currency+platform combo
+    await supabase
+      .from('user_snipers')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('chat_id', chatId)
+      .eq('currency', currency.toUpperCase())
+      .or(`platform.is.null,platform.eq.${platform.toLowerCase()}`);
+  }
 
-  // Then insert a new active one
+  // Then insert the new one
   const { error } = await supabase
     .from('user_snipers')
     .insert({
