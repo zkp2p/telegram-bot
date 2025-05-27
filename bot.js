@@ -271,16 +271,23 @@ class DatabaseManager {
 // Update these methods in your DatabaseManager class:
 
 async setUserSniper(chatId, currency, platform = null) {
+  // First, deactivate any existing sniper for this currency/platform combo
+  await supabase
+    .from('user_snipers')
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq('chat_id', chatId)
+    .eq('currency', currency.toUpperCase())
+    .eq('platform', platform ? platform.toLowerCase() : null);
+
+  // Then insert a new active one
   const { error } = await supabase
     .from('user_snipers')
-    .upsert({ 
-      chat_id: chatId, 
+    .insert({
+      chat_id: chatId,
       currency: currency.toUpperCase(),
-      platform: platform ? platform.toLowerCase() : null, // Add platform field
+      platform: platform ? platform.toLowerCase() : null,
       is_active: true,
       created_at: new Date().toISOString()
-    }, { 
-      onConflict: 'chat_id,currency,platform' // Update conflict resolution
     });
   
   if (error) console.error('Error setting sniper:', error);
