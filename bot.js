@@ -314,6 +314,7 @@ async getUserSnipers(chatId) {
     .from('user_snipers')
     .select('currency, platform, created_at')
     .eq('chat_id', chatId)
+    .eq('is_active', true) 
     .gte('created_at', thirtyDaysAgo.toISOString())
     .order('created_at', { ascending: false });
   
