@@ -518,7 +518,7 @@ const abi = [
     address indexed depositor,  
     address indexed token,
     uint256 amount,
-    tuple intentAmountRange
+    tuple(uint256,uint256) intentAmountRange
   )`,
   `event DepositCurrencyAdded(
     uint256 indexed depositId,
