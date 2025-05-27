@@ -1,56 +1,82 @@
-# ZKP2P Telegram Tracker Bot
+ZKP2P Telegram Tracker Bot
+Telegram bot for tracking ZKP2P deposit events on Base blockchain in real-time with advanced sniper alerts for arbitrage opportunities.
+🚀 Features
 
-Telegram bot for tracking ZKP2P deposit events on Base blockchain in real-time.
+Real-time tracking: Monitor specific deposit IDs or listen to all deposits
+Event notifications: Get alerts for order creation, fulfillment, and cancellation
+Sniper alerts: Automated arbitrage notifications when deposits offer better exchange rates than market
+Multi-platform support: CashApp, Venmo, Revolut, Wise, and Zelle
+Persistent storage: User data backed by Supabase database
+Clean event handling: Ignores withdrawal events to prevent spam
 
-## 🚀 Features
+📱 Commands
+Deposit Tracking
 
-- Track specific deposit IDs or listen to all deposits
-- Real-time notifications for order creation, fulfillment, and cancellation
-- Supports CashApp, Venmo, Revolut, Wise, and Zelle
-- Persistent user data with Supabase
-- Auto-reconnecting WebSocket connection
+/deposit 123 - Track a specific deposit
+/deposit all - Listen to ALL deposits (every event)
+/deposit stop - Stop listening to all deposits
+/deposit 123,456,789 - Track multiple deposits
+/remove 123 - Stop tracking specific deposit(s)
 
-## 📱 Commands
+Sniper (Arbitrage Alerts)
 
-- `/deposit 123` - Track a specific deposit
-- `/deposit all` - Listen to all deposits  
-- `/deposit stop` - Stop listening to all
-- `/remove 123` - Stop tracking specific deposit
-- `/list` - Show your tracked deposits
-- `/clearall` - Reset all tracking
-- `/status` - Check connection status
-- `/help` - Show help
+/sniper eur - Snipe EUR on ALL platforms
+/sniper eur revolut - Snipe EUR only on Revolut
+/sniper usd zelle - Snipe USD only on Zelle
+/sniper list - Show active sniper settings
+/sniper clear - Clear all sniper settings
+/unsnipe eur - Stop sniping EUR (all platforms)
+/unsnipe eur wise - Stop sniping EUR on Wise only
 
-## 🛠 Setup
+General
 
-### Environment Variables
-```bash
-TELEGRAM_BOT_TOKEN=your_bot_token
-BASE_RPC=your_base_rpc_url
+/list - Show all tracking status (deposits + snipers)
+/clearall - Stop all tracking and clear everything
+/status - Check WebSocket connection and settings
+/help - Show this help message
+
+🎯 How Sniper Works
+The bot monitors exchange rates and alerts you when new deposits offer better rates than market:
+
+Compares deposit rates vs live market rates
+Alerts on opportunities 0.2% or better
+Supports currency and platform-specific targeting
+Shows exact percentage discount and profit potential
+
+🛠 Setup
+Environment Variables
+bashTELEGRAM_BOT_TOKEN=your_bot_token
+BASE_RPC=your_base_rpc_url  
 SUPABASE_URL=your_supabase_url
 SUPABASE_ANON_KEY=your_supabase_key
-```
+EXCHANGE_API_KEY=your_exchange_rate_api_key
 
-### Deploy to Heroku
-1. Fork this repo
-2. Connect to Heroku
-3. Add environment variables
-4. Deploy
+📊 Supported Events
 
-### Run Locally
-```bash
-npm install
-npm start
-```
+DepositReceived - New deposits created
+DepositCurrencyAdded - Currency options added (triggers sniper)
+DepositVerifierAdded - Platform verifiers added
+IntentSignaled - Orders created
+IntentFulfilled - Orders completed
+IntentPruned - Orders cancelled
+DepositWithdrawn - Deposits withdrawn (ignored)
+DepositClosed - Deposits closed (ignored)
 
-## 🤝 Contributing
+🤝 Contributing
+This is an open source project! Contributions welcome:
 
-This is an **open source** project! Contributions welcome:
+Fork the repo
+Create a feature branch
+Submit a pull request
 
-1. Fork the repo
-2. Create a feature branch
-3. Submit a pull request
+Ideas for contributions:
 
-## 📄 License
+Additional exchange rate providers
+More sophisticated arbitrage calculations
+Portfolio tracking features
+Advanced filtering options
 
+📄 License
 MIT License - feel free to use and modify!
+
+Built for the ZKP2P community. Trade safely and happy sniping! 🎯
