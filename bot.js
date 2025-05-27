@@ -182,7 +182,7 @@ const getUserTrackedDeposits = (chatId) => {
 };
 
 const getUserDepositStates = (chatId) => {
-  if (!userDepositStates.has(chatId) {
+  if (!userDepositStates.has(chatId)) {
     userDepositStates.set(chatId, new Map());
   }
   return userDepositStates.get(chatId);
