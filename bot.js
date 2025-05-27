@@ -13,7 +13,9 @@ const supabase = createClient(
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
 // Exchange rate API configuration
-const EXCHANGE_API_URL = `https://v6.exchangerate-api.com/v6/${process.env.EXCHANGE_API_KEY}/latest/USD`;
+const EXCHANGE_API_KEY = process.env.EXCHANGE_API_KEY;
+const EXCHANGE_API_URL = `https://v6.exchangerate-api.com/v6/${EXCHANGE_API_KEY}/latest/USD`;
+
 
 // Database helper functions
 class DatabaseManager {
