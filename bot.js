@@ -5,8 +5,119 @@ const TelegramBot = require('node-telegram-bot-api');
 // Telegram setup
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
-// Base WebSocket RPC (Alchemy or others)
-const provider = new WebSocketProvider(process.env.BASE_RPC);
+// Enhanced WebSocket Provider with reconnection
+class ResilientWebSocketProvider {
+  constructor(url, contractAddress, eventHandler) {
+    this.url = url;
+    this.contractAddress = contractAddress;
+    this.eventHandler = eventHandler;
+    this.reconnectDelay = 1000; // Start with 1 second
+    this.maxReconnectDelay = 30000; // Max 30 seconds
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 50; // Try 50 times before giving up
+    this.isConnecting = false;
+    this.provider = null;
+    
+    this.connect();
+  }
+
+  async connect() {
+    if (this.isConnecting) return;
+    this.isConnecting = true;
+
+    try {
+      console.log(`🔌 Attempting WebSocket connection (attempt ${this.reconnectAttempts + 1})`);
+      
+      // Clean up existing provider
+      if (this.provider) {
+        this.provider.removeAllListeners();
+        this.provider.destroy?.();
+      }
+
+      this.provider = new WebSocketProvider(this.url);
+      
+      // Set up event listeners
+      this.setupEventListeners();
+      
+      // Test connection
+      await this.provider.getNetwork();
+      
+      console.log('✅ WebSocket connected successfully');
+      
+      // Reset reconnect parameters on successful connection
+      this.reconnectAttempts = 0;
+      this.reconnectDelay = 1000;
+      this.isConnecting = false;
+      
+      // Set up contract event listening
+      this.setupContractListening();
+      
+    } catch (error) {
+      console.error('❌ WebSocket connection failed:', error.message);
+      this.isConnecting = false;
+      this.scheduleReconnect();
+    }
+  }
+
+  setupEventListeners() {
+    this.provider.on('error', (error) => {
+      console.error('❌ WebSocket error:', error.message);
+      this.scheduleReconnect();
+    });
+
+    this.provider.on('close', (code, reason) => {
+      console.log(`🔌 WebSocket closed: ${code} - ${reason}`);
+      this.scheduleReconnect();
+    });
+
+    // Handle network changes
+    this.provider.on('network', (newNetwork, oldNetwork) => {
+      if (oldNetwork) {
+        console.log('🌐 Network changed, reconnecting...');
+        this.scheduleReconnect();
+      }
+    });
+  }
+
+  setupContractListening() {
+    if (!this.provider) return;
+    
+    try {
+      this.provider.on({ address: this.contractAddress.toLowerCase() }, this.eventHandler);
+      console.log(`👂 Listening for events on contract: ${this.contractAddress}`);
+    } catch (error) {
+      console.error('❌ Failed to set up contract listening:', error.message);
+      this.scheduleReconnect();
+    }
+  }
+
+  scheduleReconnect() {
+    if (this.isConnecting) return;
+    
+    this.reconnectAttempts++;
+    
+    if (this.reconnectAttempts > this.maxReconnectAttempts) {
+      console.error(`💀 Max reconnection attempts (${this.maxReconnectAttempts}) reached. Stopping.`);
+      return;
+    }
+
+    const delay = Math.min(
+      this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts), 
+      this.maxReconnectDelay
+    );
+    
+    console.log(`⏰ Scheduling reconnection in ${delay}ms (attempt ${this.reconnectAttempts})`);
+    
+    setTimeout(() => {
+      this.connect();
+    }, delay);
+  }
+
+  // Getter to access the current provider
+  get currentProvider() {
+    return this.provider;
+  }
+}
 
 // ZKP2P Escrow contract on Base
 const contractAddress = '0xca38607d85e8f6294dc10728669605e6664c2d70';
@@ -171,6 +282,15 @@ bot.onText(/\/clearall/, (msg) => {
   bot.sendMessage(chatId, `🗑️ Cleared all tracked deposit IDs.`, { parse_mode: 'Markdown' });
 });
 
+bot.onText(/\/status/, (msg) => {
+  const chatId = msg.chat.id;
+  const isConnected = resilientProvider.currentProvider !== null;
+  const statusEmoji = isConnected ? '🟢' : '🔴';
+  const statusText = isConnected ? 'Connected' : 'Disconnected';
+  
+  bot.sendMessage(chatId, `${statusEmoji} *WebSocket Status:* ${statusText}`, { parse_mode: 'Markdown' });
+});
+
 bot.onText(/\/help/, (msg) => {
   const chatId = msg.chat.id;
   const helpMessage = `
@@ -182,6 +302,7 @@ bot.onText(/\/help/, (msg) => {
 • \`/remove 123\` - Stop tracking specific deposit(s)
 • \`/list\` - Show all tracked deposits and their status
 • \`/clearall\` - Stop tracking all deposits
+• \`/status\` - Check WebSocket connection status
 • \`/help\` - Show this help message
 
 *Note: Each user has their own tracking list*
@@ -202,7 +323,7 @@ const fiatCurrencyMap = {
   '0x221012e06ebf59a20b82e3003cf5d6ee973d9008bdb6e2f604faa89a27235522': 'CAD',
   '0xc9d84274fd58aa177cabff54611546051b74ad658b939babaad6282500300d36': 'CHF',
   '0xfaaa9c7b2f09d6a1b0971574d43ca62c3e40723167c09830ec33f06cec921381': 'CNY',
-  '0xfff16d60be267153303bbfa66e593fb8d06e24ea5ef24b6acca5224c2ca6b907': 'EUR',
+  '0xfff16d60be267153303bbfa66e593fb8d06e24ea5c224c2ca6b907': 'EUR',
   '0x90832e2dc3221e4d56977c1aa8f6a6706b9ad6542fbbdaac13097d0fa5e42e67': 'GBP',
   '0xa156dad863111eeb529c4b3a2a30ad40e6dcff3b27d8f282f82996e58eee7e7d': 'HKD',
   '0xc681c4652bae8bd4b59bec1cdb90f868d93cc9896af9862b196843f54bf254b3': 'IDR',
@@ -241,8 +362,8 @@ const createDepositKeyboard = (depositId) => {
   };
 };
 
-// MODIFIED: Log listener now sends to individual users
-provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
+// Event handler function
+const handleContractEvent = async (log) => {
   console.log('\n📦 Raw log received:');
   console.log(log);
 
@@ -444,18 +565,46 @@ provider.on({ address: contractAddress.toLowerCase() }, async (log) => {
     console.log('📝 First topic (event signature):', log.topics[0]);
     console.log('🔄 Continuing to listen for other events...');
   }
-});
+};
+
+// Initialize the resilient WebSocket provider
+const resilientProvider = new ResilientWebSocketProvider(
+  process.env.BASE_RPC,
+  contractAddress,
+  handleContractEvent
+);
 
 // Add startup message
-console.log('🤖 ZKP2P Telegram Bot Started (Per-User Tracking)');
+console.log('🤖 ZKP2P Telegram Bot Started (Per-User Tracking with Auto-Reconnect)');
 console.log('🔍 Listening for contract events...');
 console.log(`📡 Contract: ${contractAddress}`);
 
-// Add basic error handlers to prevent crashing
-provider.on('error', (error) => {
-  console.error('❌ WebSocket provider error:', error);
-});
-
+// Enhanced error handlers
 process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught exception:', error);
+  // Don't exit, let reconnection handle recovery
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled rejection at:', promise, 'reason:', reason);
+  // Don't exit, let reconnection handle recovery
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('🔄 Received SIGTERM, shutting down gracefully...');
+  if (resilientProvider.currentProvider) {
+    resilientProvider.currentProvider.removeAllListeners();
+    resilientProvider.currentProvider.destroy?.();
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('🔄 Received SIGINT, shutting down gracefully...');
+  if (resilientProvider.currentProvider) {
+    resilientProvider.currentProvider.removeAllListeners();
+    resilientProvider.currentProvider.destroy?.();
+  }
+  process.exit(0);
 });
