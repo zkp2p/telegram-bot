@@ -582,6 +582,12 @@ const abi = [
     address indexed verifier,
     bytes32 indexed currency,
     uint256 conversionRate
+  )`,
+  `event DepositVerifierAdded(
+    uint256 indexed depositId,
+    address indexed verifier,
+    bytes32 indexed payeeDetailsHash,
+    address intentGatingService
   )`
 ];
 
