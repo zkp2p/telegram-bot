@@ -268,67 +268,82 @@ class DatabaseManager {
   }
 
   // Sniper-related database methods
-  async setUserSniper(chatId, currency) {
-    const { error } = await supabase
-      .from('user_snipers')
-      .upsert({ 
-        chat_id: chatId, 
-        currency: currency.toUpperCase(),
-        is_active: true,
-        created_at: new Date().toISOString()
-      }, { 
-        onConflict: 'chat_id,currency' 
-      });
-    
-    if (error) console.error('Error setting sniper:', error);
-  }
+// Update these methods in your DatabaseManager class:
 
-  async removeUserSniper(chatId, currency = null) {
-    let query = supabase
-      .from('user_snipers')
-      .update({ 
-        is_active: false,
-        updated_at: new Date().toISOString()
-      })
-      .eq('chat_id', chatId);
-    
-    if (currency) {
-      query = query.eq('currency', currency.toUpperCase());
-    }
-    
-    const { error } = await query;
-    if (error) console.error('Error removing sniper:', error);
-  }
+async setUserSniper(chatId, currency, platform = null) {
+  const { error } = await supabase
+    .from('user_snipers')
+    .upsert({ 
+      chat_id: chatId, 
+      currency: currency.toUpperCase(),
+      platform: platform ? platform.toLowerCase() : null, // Add platform field
+      is_active: true,
+      created_at: new Date().toISOString()
+    }, { 
+      onConflict: 'chat_id,currency,platform' // Update conflict resolution
+    });
+  
+  if (error) console.error('Error setting sniper:', error);
+}
 
-  async getUserSnipers(chatId) {
-    const { data, error } = await supabase
-      .from('user_snipers')
-      .select('currency')
-      .eq('chat_id', chatId)
-      .eq('is_active', true);
-    
-    if (error) {
-      console.error('Error fetching user snipers:', error);
-      return [];
-    }
-    
-    return data.map(row => row.currency);
+async removeUserSniper(chatId, currency = null, platform = null) {
+  let query = supabase
+    .from('user_snipers')
+    .update({ 
+      is_active: false,
+      updated_at: new Date().toISOString()
+    })
+    .eq('chat_id', chatId);
+  
+  if (currency) {
+    query = query.eq('currency', currency.toUpperCase());
   }
+  
+  if (platform) {
+    query = query.eq('platform', platform.toLowerCase());
+  }
+  
+  const { error } = await query;
+  if (error) console.error('Error removing sniper:', error);
+}
 
-  async getUsersWithSniper(currency) {
-    const { data, error } = await supabase
-      .from('user_snipers')
-      .select('chat_id')
-      .eq('currency', currency.toUpperCase())
-      .eq('is_active', true);
-    
-    if (error) {
-      console.error('Error fetching sniper users:', error);
-      return [];
-    }
-    
-    return data.map(row => row.chat_id);
+async getUserSnipers(chatId) {
+  const { data, error } = await supabase
+    .from('user_snipers')
+    .select('currency, platform')
+    .eq('chat_id', chatId)
+    .eq('is_active', true);
+  
+  if (error) {
+    console.error('Error fetching user snipers:', error);
+    return [];
   }
+  
+  return data.map(row => ({
+    currency: row.currency,
+    platform: row.platform
+  }));
+}
+
+async getUsersWithSniper(currency, platform) {
+  let query = supabase
+    .from('user_snipers')
+    .select('chat_id')
+    .eq('currency', currency.toUpperCase())
+    .eq('is_active', true);
+  
+  // Get users who want this currency on ANY platform OR this specific platform
+  query = query.or(`platform.is.null,platform.eq.${platform.toLowerCase()}`);
+  
+  const { data, error } = await query;
+  
+  if (error) {
+    console.error('Error fetching sniper users:', error);
+    return [];
+  }
+  
+  return data.map(row => row.chat_id);
+}
 
   async logSniperAlert(chatId, depositId, currency, depositRate, marketRate, percentageDiff) {
     const { error } = await supabase
@@ -667,8 +682,10 @@ const createDepositKeyboard = (depositId) => {
 };
 
 // Sniper logic
-async function checkSniperOpportunity(depositId, depositAmount, currencyHash, conversionRate) {
+async function checkSniperOpportunity(depositId, depositAmount, currencyHash, conversionRate, verifierAddress) {
   const currencyCode = currencyHashToCode[currencyHash.toLowerCase()];
+  const platformName = getPlatformName(verifierAddress);
+
   if (!currencyCode) return; // Only skip unknown currencies
   
   console.log(`🎯 Checking sniper opportunity for deposit ${depositId}, currency: ${currencyCode}`);
@@ -698,7 +715,7 @@ async function checkSniperOpportunity(depositId, depositAmount, currencyHash, co
   // Only alert if deposit offers better rate (lower rate = better for buyer)
   // Minimum 1% threshold to avoid spam
   if (percentageDiff >= 1) {
-    const interestedUsers = await db.getUsersWithSniper(currencyCode);
+    const interestedUsers = await db.getUsersWithSniper(currencyCode, platformName);
     
     if (interestedUsers.length > 0) {
       console.log(`🎯 SNIPER OPPORTUNITY! Alerting ${interestedUsers.length} users`);
@@ -706,12 +723,13 @@ async function checkSniperOpportunity(depositId, depositAmount, currencyHash, co
       const formattedAmount = (Number(depositAmount) / 1e6).toFixed(2);
       const message = `
 🎯 *SNIPER ALERT - ${currencyCode}*
+🏦 *Platform:* ${platformName}
 📊 New Deposit #${depositId}: ${formattedAmount} USDC
 💰 Deposit Rate: ${depositRate.toFixed(4)} ${currencyCode}/USD
 📈 Market Rate: ${marketRate.toFixed(4)} ${currencyCode}/USD  
 🔥 ${percentageDiff.toFixed(1)}% BETTER than market!
 
-*You get ${currencyCode} at ${percentageDiff.toFixed(1)}% discount!*
+*You get ${currencyCode} at ${percentageDiff.toFixed(1)}% discount on ${platformName}!*
 `.trim();
 
       for (const chatId of interestedUsers) {
@@ -809,7 +827,12 @@ bot.onText(/\/list/, async (msg) => {
   }
   
   if (snipers.length > 0) {
-    message += `🎯 *Sniping currencies:* ${snipers.join(', ')}\n\n`;
+    message += `🎯 *Active Snipers:*\n`;
+    snipers.forEach(sniper => {
+      const platformText = sniper.platform ? ` on ${sniper.platform}` : ' (all platforms)';
+      message += `• ${sniper.currency}${platformText}\n`;
+    });
+    message += `\n`;
   }
   
   const idsArray = Array.from(userDeposits).sort((a, b) => a - b);
@@ -856,7 +879,12 @@ bot.onText(/\/status/, async (msg) => {
   }
   
   if (snipers.length > 0) {
-    message += `🎯 *Sniping:* ${snipers.join(', ')}\n`;
+    message += `🎯 *Sniping:* `;
+    const sniperTexts = snipers.map(sniper => {
+      const platformText = sniper.platform ? ` on ${sniper.platform}` : '';
+      return `${sniper.currency}${platformText}`;
+    });
+    message += `${sniperTexts.join(', ')}\n`;
   }
   
   bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
@@ -874,10 +902,16 @@ bot.onText(/\/sniper (.+)/, async (msg, match) => {
     if (snipers.length === 0) {
       bot.sendMessage(chatId, `🎯 No sniper currencies set.`, { parse_mode: 'Markdown' });
     } else {
-      bot.sendMessage(chatId, `🎯 *Sniping currencies:* ${snipers.join(', ')}`, { parse_mode: 'Markdown' });
+      let message = `🎯 *Active Snipers:*\n\n`;
+      snipers.forEach(sniper => {
+        const platformText = sniper.platform ? ` on ${sniper.platform}` : ' (all platforms)';
+        message += `• ${sniper.currency}${platformText}\n`;
+      });
+      bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     }
     return;
   }
+    
   
   if (input === 'clear') {
     await db.removeUserSniper(chatId);
@@ -885,24 +919,43 @@ bot.onText(/\/sniper (.+)/, async (msg, match) => {
     return;
   }
   
-  const currency = input.toUpperCase();
+  // Parse input: "eur" or "eur revolut"
+  const parts = input.split(' ');
+  const currency = parts[0].toUpperCase();
+  const platform = parts[1] ? parts[1].toLowerCase() : null;
+  
   const supportedCurrencies = Object.values(currencyHashToCode);
+  const supportedPlatforms = ['revolut', 'wise', 'cashapp', 'venmo', 'zelle'];
   
   if (!supportedCurrencies.includes(currency)) {
     bot.sendMessage(chatId, `❌ Currency '${currency}' not supported.\n\n*Supported currencies:*\n${supportedCurrencies.join(', ')}`, { parse_mode: 'Markdown' });
     return;
   }
   
-  await db.setUserSniper(chatId, currency);
-  bot.sendMessage(chatId, `🎯 *Sniper activated for ${currency}!*\n\nYou'll be alerted when new deposits offer better rates than market.`, { parse_mode: 'Markdown' });
+  if (platform && !supportedPlatforms.includes(platform)) {
+    bot.sendMessage(chatId, `❌ Platform '${platform}' not supported.\n\n*Supported platforms:*\n${supportedPlatforms.join(', ')}`, { parse_mode: 'Markdown' });
+    return;
+  }
+  
+  await db.setUserSniper(chatId, currency, platform);
+  
+  const platformText = platform ? ` on ${platform}` : ' (all platforms)';
+  bot.sendMessage(chatId, `🎯 *Sniper activated for ${currency}${platformText}!*\n\nYou'll be alerted when new deposits offer better rates than market.`, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/unsnipe (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
-  const currency = match[1].trim().toUpperCase();
+  const input = match[1].trim().toLowerCase();
   
-  await db.removeUserSniper(chatId, currency);
-  bot.sendMessage(chatId, `🎯 Stopped sniping ${currency}.`, { parse_mode: 'Markdown' });
+  // Parse input: "eur" or "eur revolut"
+  const parts = input.split(' ');
+  const currency = parts[0].toUpperCase();
+  const platform = parts[1] ? parts[1].toLowerCase() : null;
+  
+  await db.removeUserSniper(chatId, currency, platform);
+  
+  const platformText = platform ? ` on ${platform}` : ' (all platforms)';
+  bot.sendMessage(chatId, `🎯 Stopped sniping ${currency}${platformText}.`, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/help/, (msg) => {
@@ -918,10 +971,13 @@ bot.onText(/\/help/, (msg) => {
 • \`/remove 123\` - Stop tracking specific deposit(s)
 
 **Sniper (Arbitrage Alerts):**
-• \`/sniper eur\` - Set up sniper alerts for EUR
-• \`/sniper list\` - Show active sniper currencies  
-• \`/sniper clear\` - Clear all sniper settings
-• \`/unsnipe eur\` - Stop sniping specific currency
+- \`/sniper eur\` - Snipe EUR on ALL platforms
+- \`/sniper eur revolut\` - Snipe EUR only on Revolut
+- \`/sniper usd zelle\` - Snipe USD only on Zelle
+- \`/sniper list\` - Show active sniper settings
+- \`/sniper clear\` - Clear all sniper settings
+- \`/unsnipe eur\` - Stop sniping EUR (all platforms)
+- \`/unsnipe eur wise\` - Stop sniping EUR on Wise only
 
 **General:**
 • \`/list\` - Show all tracking status (deposits + snipers)
@@ -1140,7 +1196,7 @@ if (name === 'DepositReceived') {
 
     // NEW: Handle DepositCurrencyAdded for sniper functionality
   if (name === 'DepositCurrencyAdded') {
-    const { depositId, currency, conversionRate } = parsed.args;
+    const { depositId, verifier, currency, conversionRate } = parsed.args;  
     const id = Number(depositId);
     
     console.log('🎯 DepositCurrencyAdded detected:', id);
@@ -1150,7 +1206,7 @@ if (name === 'DepositReceived') {
     console.log(`💰 Retrieved deposit amount: ${depositAmount} (${formatUSDC(depositAmount)} USDC)`);
     
     // Check for sniper opportunity with real amount
-    await checkSniperOpportunity(id, depositAmount, currency, conversionRate);
+    await checkSniperOpportunity(id, depositAmount, currency, conversionRate, verifier);
   }
 
   } catch (err) {
