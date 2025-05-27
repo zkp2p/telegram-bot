@@ -595,6 +595,15 @@ const abi = [
     address indexed verifier,
     bytes32 indexed payeeDetailsHash,
     address intentGatingService
+  )`,
+  `event DepositWithdrawn(
+    uint256 indexed depositId,
+    address indexed depositor,
+    uint256 amount
+  )`,
+  `event DepositClosed(
+    uint256 depositId,
+    address depositor
   )`
 ];
 
@@ -1196,6 +1205,24 @@ if (name === 'IntentPruned') {
   }, 5000); // Changed from 2000 to 5000ms
 }
 
+if (name === 'DepositWithdrawn') {
+  const { depositId, depositor, amount } = parsed.args;
+  const id = Number(depositId);
+  
+  console.log(`💸 DepositWithdrawn: ${formatUSDC(amount)} USDC from deposit ${id} by ${depositor} - ignored`);
+  return;
+}
+
+if (name === 'DepositClosed') {
+  const { depositId, depositor } = parsed.args;
+  const id = Number(depositId);
+  
+  console.log(`🔒 DepositClosed: deposit ${id} by ${depositor} - ignored`);
+  return;
+}
+
+
+    
 if (name === 'DepositReceived') {
   const { depositId, depositor, token, amount, intentAmountRange } = parsed.args;
   const id = Number(depositId);
