@@ -325,10 +325,11 @@ async getUserSnipers(chatId) {
   // Deduplicate - keep only the newest entry for each currency+platform combo
   const unique = new Map();
   data.forEach(row => {
-    const key = `${row.currency}-${row.platform}`;
-    if (!unique.has(key)) {
-      unique.set(key, row);
+    const existing = unique.get(key);
+    if (!existing || new Date(row.created_at) > new Date(existing.created_at)) {
+      unique.set(key, row); // Always keep the latest one
     }
+    
   });
   
   return Array.from(unique.values());
