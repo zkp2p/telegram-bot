@@ -754,7 +754,7 @@ async function checkSniperOpportunity(depositId, depositAmount, currencyHash, co
   // Only alert if deposit offers better rate (lower rate = better for buyer)
   // Minimum .2% threshold
   if (percentageDiff >= 0.2) {
-    const interestedUsers = await db.getUserSnipers(currencyCode, platformName);
+    const interestedUsers = await db.getUsersWithSniper(currencyCode, platformName);
     
     if (interestedUsers.length > 0) {
       console.log(`🎯 SNIPER OPPORTUNITY! Alerting ${interestedUsers.length} users`);
