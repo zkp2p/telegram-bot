@@ -669,7 +669,7 @@ const createDepositKeyboard = (depositId) => {
 // Sniper logic
 async function checkSniperOpportunity(depositId, depositAmount, currencyHash, conversionRate) {
   const currencyCode = currencyHashToCode[currencyHash.toLowerCase()];
-  if (!currencyCode || currencyCode === 'USD') return; // Skip USD or unknown currencies
+  if (!currencyCode) return; // Only skip unknown currencies
   
   console.log(`🎯 Checking sniper opportunity for deposit ${depositId}, currency: ${currencyCode}`);
   
@@ -680,7 +680,8 @@ async function checkSniperOpportunity(depositId, depositAmount, currencyHash, co
     return;
   }
   
-  const marketRate = exchangeRates[currencyCode];
+  // For USD, market rate is always 1.0 - better to hardcode than to call the api (i guess)
+  const marketRate = currencyCode === 'USD' ? 1.0 : exchangeRates[currencyCode];
   if (!marketRate) {
     console.log(`❌ No market rate found for ${currencyCode}`);
     return;
@@ -702,7 +703,7 @@ async function checkSniperOpportunity(depositId, depositAmount, currencyHash, co
     if (interestedUsers.length > 0) {
       console.log(`🎯 SNIPER OPPORTUNITY! Alerting ${interestedUsers.length} users`);
       
-      const formattedAmount = (Number(depositAmount) / 1e6).toFixed(0);
+      const formattedAmount = (Number(depositAmount) / 1e6).toFixed(2);
       const message = `
 🎯 *SNIPER ALERT - ${currencyCode}*
 📊 New Deposit #${depositId}: ${formattedAmount} USDC
@@ -1074,58 +1075,59 @@ const handleContractEvent = async (log) => {
       }
     }
 
-    if (name === 'IntentPruned') {
-      const { intentHash, depositId } = parsed.args;
-      const id = Number(depositId);
-      console.log('🧪 IntentPruned depositId:', id);
+if (name === 'IntentPruned') {
+  const { intentHash, depositId } = parsed.args;
+  const id = Number(depositId);
+  console.log('🧪 IntentPruned depositId:', id);
 
-      const interestedUsers = await db.getUsersInterestedInDeposit(id);
-      if (interestedUsers.length === 0) {
-        console.log('🚫 Ignored — no users interested in this depositId.');
-        return;
-      }
+  const interestedUsers = await db.getUsersInterestedInDeposit(id);
+  if (interestedUsers.length === 0) {
+    console.log('🚫 Ignored — no users interested in this depositId.');
+    return;
+  }
 
-      const txHash = log.transactionHash;
-      pendingPrunedEvents.set(txHash, {
-        intentHash,
-        depositId: id,
-        blockNumber: log.blockNumber,
-        txHash,
-        interestedUsers
-      });
+  const txHash = log.transactionHash;
+  pendingPrunedEvents.set(txHash, {
+    intentHash,
+    depositId: id,
+    blockNumber: log.blockNumber,
+    txHash,
+    interestedUsers
+  });
 
-      setTimeout(async () => {
-        const prunedEvent = pendingPrunedEvents.get(txHash);
-        if (prunedEvent) {
-          console.log(`📤 Sending cancellation to ${prunedEvent.interestedUsers.length} users interested in deposit ${id}`);
-          
-          const message = `
+  // Increased delay to 5 seconds to check for fulfillment
+  setTimeout(async () => {
+    const prunedEvent = pendingPrunedEvents.get(txHash);
+    if (prunedEvent) {
+      console.log(`📤 Sending cancellation to ${prunedEvent.interestedUsers.length} users interested in deposit ${id}`);
+      
+      const message = `
 🟠 *Order Cancelled*
-• *Deposit ID:* \`${id}\`
-• *Order ID:* \`${intentHash}\`
-• *Block:* ${prunedEvent.blockNumber}
-• *Tx:* [View on BaseScan](${txLink(prunedEvent.txHash)})
+- *Deposit ID:* \`${id}\`
+- *Order ID:* \`${intentHash}\`
+- *Block:* ${prunedEvent.blockNumber}
+- *Tx:* [View on BaseScan](${txLink(prunedEvent.txHash)})
 
 *Order was cancelled*
 `.trim();
 
-          for (const chatId of prunedEvent.interestedUsers) {
-            await db.updateDepositStatus(chatId, id, 'pruned', intentHash);
-            await db.logEventNotification(chatId, id, 'pruned');
-            
-            bot.sendMessage(chatId, message, { 
-              parse_mode: 'Markdown', 
-              disable_web_page_preview: true,
-              reply_markup: createDepositKeyboard(id)
-            });
-          }
-          
-          pendingPrunedEvents.delete(txHash);
-        }
-      }, 2000);
+      for (const chatId of prunedEvent.interestedUsers) {
+        await db.updateDepositStatus(chatId, id, 'pruned', intentHash);
+        await db.logEventNotification(chatId, id, 'pruned');
+        
+        bot.sendMessage(chatId, message, { 
+          parse_mode: 'Markdown', 
+          disable_web_page_preview: true,
+          reply_markup: createDepositKeyboard(id)
+        });
+      }
+      
+      pendingPrunedEvents.delete(txHash);
     }
+  }, 5000); // Changed from 2000 to 5000ms
+}
 
-    if (name === 'DepositReceived') {
+if (name === 'DepositReceived') {
   const { depositId, depositor, token, amount, intentAmountRange } = parsed.args;
   const id = Number(depositId);
   const usdcAmount = Number(amount);
@@ -1134,29 +1136,6 @@ const handleContractEvent = async (log) => {
   
   // Store the deposit amount for later sniper use
   await db.storeDepositAmount(id, usdcAmount);
-  
-  // Optional: notify users tracking this specific deposit
-  const interestedUsers = await db.getUsersInterestedInDeposit(id);
-  if (interestedUsers.length > 0) {
-    const message = `
-💰 *New Deposit Created*
-- *Deposit ID:* \`${id}\`
-- *Amount:* ${formatUSDC(amount)} USDC
-- *Depositor:* \`${depositor}\`
-- *Block:* ${log.blockNumber}
-- *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
-`.trim();
-
-    for (const chatId of interestedUsers) {
-      await db.logEventNotification(chatId, id, 'deposit_received');
-      
-      bot.sendMessage(chatId, message, { 
-        parse_mode: 'Markdown', 
-        disable_web_page_preview: true,
-        reply_markup: createDepositKeyboard(id)
-      });
-    }
-  }
 }
 
     // NEW: Handle DepositCurrencyAdded for sniper functionality
