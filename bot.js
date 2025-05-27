@@ -718,7 +718,7 @@ const createDepositKeyboard = (depositId) => {
 // Sniper logic
 async function checkSniperOpportunity(depositId, depositAmount, currencyHash, conversionRate, verifierAddress) {
   const currencyCode = currencyHashToCode[currencyHash.toLowerCase()];
-  const platformName = getPlatformName(verifierAddress);
+  const platformName = getPlatformName(verifierAddress).toLowerCase();
 
   if (!currencyCode) return; // Only skip unknown currencies
   
