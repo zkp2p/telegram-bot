@@ -271,18 +271,17 @@ class DatabaseManager {
 // Update these methods in your DatabaseManager class:
 
 async setUserSniper(chatId, currency, platform = null) {
-  // Smart deactivation logic
   if (platform === null) {
-    // If setting "all platforms", deactivate ALL snipers for this currency
+    // If setting "all platforms" (/sniper eur), deactivate ALL existing snipers for this currency
     await supabase
       .from('user_snipers')
       .update({ is_active: false, updated_at: new Date().toISOString() })
       .eq('chat_id', chatId)
       .eq('currency', currency.toUpperCase());
   } else {
-    // If setting specific platform, deactivate:
-    // 1. Any "all platforms" sniper for this currency 
-    // 2. Any existing sniper for this specific currency+platform combo
+    // If setting specific platform (/sniper eur wise), only deactivate:
+    // 1. Any existing "all platforms" sniper for this currency (platform = null)
+    // 2. Any existing sniper for this exact same currency+platform combo
     await supabase
       .from('user_snipers')
       .update({ is_active: false, updated_at: new Date().toISOString() })
