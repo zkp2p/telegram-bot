@@ -623,6 +623,18 @@ const abi = [
 
 const iface = new Interface(abi);
 const pendingPrunedEvents = new Map();
+const recentlyFulfilled = new Map(); // intentHash → timestamp
+const FULFILLED_TTL = 10000; // 10 sec window to suppress prune
+
+// Clean up expired fulfilled entries
+setInterval(() => {
+  const now = Date.now();
+  for (const [hash, ts] of recentlyFulfilled.entries()) {
+    if (now - ts > FULFILLED_TTL) {
+      recentlyFulfilled.delete(hash);
+    }
+  }
+}, 5000);
 
 // Verifier address to platform mapping
 const verifierMapping = {
@@ -1122,6 +1134,7 @@ const handleContractEvent = async (log) => {
 
     if (name === 'IntentFulfilled') {
       const { intentHash, depositId, verifier, owner, to, amount, sustainabilityFee, verifierFee } = parsed.args;
+      recentlyFulfilled.set(intentHash.toLowerCase(), Date.now());
       const id = Number(depositId);
       const txHash = log.transactionHash;
       const platformName = getPlatformName(verifier);
@@ -1190,7 +1203,13 @@ if (name === 'IntentPruned') {
   // Increased delay to 5 seconds to check for fulfillment
   setTimeout(async () => {
     const prunedEvent = pendingPrunedEvents.get(txHash);
-    if (prunedEvent) {
+  if (prunedEvent) {
+    const wasFulfilled = recentlyFulfilled.has(prunedEvent.intentHash.toLowerCase());
+  if (wasFulfilled) {
+    console.log(`🛑 Skipping pruned message for ${prunedEvent.intentHash} — already fulfilled`);
+    pendingPrunedEvents.delete(txHash);
+    return;
+  }
       console.log(`📤 Sending cancellation to ${prunedEvent.interestedUsers.length} users interested in deposit ${id}`);
       
       const message = `
