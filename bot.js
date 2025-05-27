@@ -33,12 +33,13 @@ class DatabaseManager {
     return data;
   }
 
-  // Get user's tracked deposits
+  // Get user's ACTIVE tracked deposits only
   async getUserDeposits(chatId) {
     const { data, error } = await supabase
       .from('user_deposits')
       .select('deposit_id, status')
-      .eq('chat_id', chatId);
+      .eq('chat_id', chatId)
+      .eq('is_active', true); // Only get active deposits
     
     if (error) {
       console.error('Error fetching user deposits:', error);
@@ -48,12 +49,13 @@ class DatabaseManager {
     return new Set(data.map(row => row.deposit_id));
   }
 
-  // Get user's deposit states
+  // Get user's ACTIVE deposit states only
   async getUserDepositStates(chatId) {
     const { data, error } = await supabase
       .from('user_deposits')
       .select('deposit_id, status, intent_hash')
-      .eq('chat_id', chatId);
+      .eq('chat_id', chatId)
+      .eq('is_active', true); // Only get active deposits
     
     if (error) {
       console.error('Error fetching user deposit states:', error);
@@ -71,7 +73,7 @@ class DatabaseManager {
     return statesMap;
   }
 
-  // Add deposit for user
+  // Add deposit for user (always creates as active)
   async addUserDeposit(chatId, depositId) {
     const { error } = await supabase
       .from('user_deposits')
@@ -79,6 +81,7 @@ class DatabaseManager {
         chat_id: chatId, 
         deposit_id: depositId,
         status: 'tracking',
+        is_active: true, // Explicitly set as active
         created_at: new Date().toISOString()
       }, { 
         onConflict: 'chat_id,deposit_id' 
@@ -87,18 +90,21 @@ class DatabaseManager {
     if (error) console.error('Error adding deposit:', error);
   }
 
-  // Remove deposit for user
+  // Remove deposit - mark as inactive instead of deleting
   async removeUserDeposit(chatId, depositId) {
     const { error } = await supabase
       .from('user_deposits')
-      .delete()
+      .update({ 
+        is_active: false,
+        updated_at: new Date().toISOString()
+      })
       .eq('chat_id', chatId)
       .eq('deposit_id', depositId);
     
     if (error) console.error('Error removing deposit:', error);
   }
 
-  // Update deposit status
+  // Update deposit status (only for active deposits)
   async updateDepositStatus(chatId, depositId, status, intentHash = null) {
     const updateData = { 
       status: status,
@@ -113,17 +119,19 @@ class DatabaseManager {
       .from('user_deposits')
       .update(updateData)
       .eq('chat_id', chatId)
-      .eq('deposit_id', depositId);
+      .eq('deposit_id', depositId)
+      .eq('is_active', true); // Only update active deposits
     
     if (error) console.error('Error updating deposit status:', error);
   }
 
-  // Get/Set listen all preference
+  // Get ACTIVE listen all preference only
   async getUserListenAll(chatId) {
     const { data, error } = await supabase
       .from('user_settings')
       .select('listen_all')
       .eq('chat_id', chatId)
+      .eq('is_active', true) // Only get active settings
       .single();
     
     if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
@@ -138,6 +146,7 @@ class DatabaseManager {
       .upsert({ 
         chat_id: chatId, 
         listen_all: listenAll,
+        is_active: true, // Always active when setting
         updated_at: new Date().toISOString()
       }, { 
         onConflict: 'chat_id' 
@@ -146,10 +155,27 @@ class DatabaseManager {
     if (error) console.error('Error setting listen all:', error);
   }
 
-  // Clear all user data
+  // Clear user data - mark as inactive (PRESERVES DATA FOR ANALYTICS)
   async clearUserData(chatId) {
-    const { error1 } = await supabase.from('user_deposits').delete().eq('chat_id', chatId);
-    const { error2 } = await supabase.from('user_settings').delete().eq('chat_id', chatId);
+    const timestamp = new Date().toISOString();
+    
+    // Mark deposits as inactive instead of deleting
+    const { error: error1 } = await supabase
+      .from('user_deposits')
+      .update({ 
+        is_active: false,
+        updated_at: timestamp
+      })
+      .eq('chat_id', chatId);
+    
+    // Mark settings as inactive instead of deleting  
+    const { error: error2 } = await supabase
+      .from('user_settings')
+      .update({ 
+        is_active: false,
+        updated_at: timestamp
+      })
+      .eq('chat_id', chatId);
     
     if (error1) console.error('Error clearing user deposits:', error1);
     if (error2) console.error('Error clearing user settings:', error2);
@@ -169,19 +195,21 @@ class DatabaseManager {
     if (error) console.error('Error logging notification:', error);
   }
 
-  // Get users interested in a deposit (for notifications)
+  // Get users interested in a deposit (only ACTIVE users/settings)
   async getUsersInterestedInDeposit(depositId) {
-    // Users listening to all deposits
+    // Users listening to all deposits (ACTIVE settings only)
     const { data: allListeners } = await supabase
       .from('user_settings')
       .select('chat_id')
-      .eq('listen_all', true);
+      .eq('listen_all', true)
+      .eq('is_active', true); // Only active "listen all" users
     
-    // Users tracking specific deposit
+    // Users tracking specific deposit (ACTIVE tracking only)
     const { data: specificTrackers } = await supabase
       .from('user_deposits')
       .select('chat_id')
-      .eq('deposit_id', depositId);
+      .eq('deposit_id', depositId)
+      .eq('is_active', true); // Only active deposit tracking
     
     const allUsers = new Set();
     
@@ -189,6 +217,38 @@ class DatabaseManager {
     specificTrackers?.forEach(user => allUsers.add(user.chat_id));
     
     return Array.from(allUsers);
+  }
+
+  // BONUS: Analytics methods (new!)
+  async getAnalytics() {
+    // Total users who ever used the bot
+    const { data: totalUsers } = await supabase
+      .from('users')
+      .select('chat_id', { count: 'exact' });
+
+    // Currently active trackers
+    const { data: activeTrackers } = await supabase
+      .from('user_deposits')
+      .select('chat_id', { count: 'exact' })
+      .eq('is_active', true);
+
+    // Total tracking sessions (including cleared ones)
+    const { data: allTimeTracking } = await supabase
+      .from('user_deposits')
+      .select('chat_id', { count: 'exact' });
+
+    // Most tracked deposits
+    const { data: popularDeposits } = await supabase
+      .from('user_deposits')
+      .select('deposit_id')
+      .eq('is_active', true);
+
+    return {
+      totalUsers: totalUsers?.length || 0,
+      activeTrackers: activeTrackers?.length || 0,
+      allTimeTracking: allTimeTracking?.length || 0,
+      popularDeposits: popularDeposits || []
+    };
   }
 }
 
