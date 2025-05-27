@@ -12,6 +12,9 @@ const supabase = createClient(
 // Telegram setup
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
+// Exchange rate API configuration
+const EXCHANGE_API_URL = `https://v6.exchangerate-api.com/v6/${process.env.EXCHANGE_API_KEY}/latest/USD`;
+
 // Database helper functions
 class DatabaseManager {
   // Initialize user if not exists
@@ -176,9 +179,19 @@ class DatabaseManager {
         updated_at: timestamp
       })
       .eq('chat_id', chatId);
+
+    // Clear sniper settings too
+    const { error: error3 } = await supabase
+      .from('user_snipers')
+      .update({ 
+        is_active: false,
+        updated_at: timestamp
+      })
+      .eq('chat_id', chatId);
     
     if (error1) console.error('Error clearing user deposits:', error1);
     if (error2) console.error('Error clearing user settings:', error2);
+    if (error3) console.error('Error clearing user snipers:', error3);
   }
 
   // Log event notification (for analytics)
@@ -250,9 +263,120 @@ class DatabaseManager {
       popularDeposits: popularDeposits || []
     };
   }
+
+  // Sniper-related database methods
+  async setUserSniper(chatId, currency) {
+    const { error } = await supabase
+      .from('user_snipers')
+      .upsert({ 
+        chat_id: chatId, 
+        currency: currency.toUpperCase(),
+        is_active: true,
+        created_at: new Date().toISOString()
+      }, { 
+        onConflict: 'chat_id,currency' 
+      });
+    
+    if (error) console.error('Error setting sniper:', error);
+  }
+
+  async removeUserSniper(chatId, currency = null) {
+    let query = supabase
+      .from('user_snipers')
+      .update({ 
+        is_active: false,
+        updated_at: new Date().toISOString()
+      })
+      .eq('chat_id', chatId);
+    
+    if (currency) {
+      query = query.eq('currency', currency.toUpperCase());
+    }
+    
+    const { error } = await query;
+    if (error) console.error('Error removing sniper:', error);
+  }
+
+  async getUserSnipers(chatId) {
+    const { data, error } = await supabase
+      .from('user_snipers')
+      .select('currency')
+      .eq('chat_id', chatId)
+      .eq('is_active', true);
+    
+    if (error) {
+      console.error('Error fetching user snipers:', error);
+      return [];
+    }
+    
+    return data.map(row => row.currency);
+  }
+
+  async getUsersWithSniper(currency) {
+    const { data, error } = await supabase
+      .from('user_snipers')
+      .select('chat_id')
+      .eq('currency', currency.toUpperCase())
+      .eq('is_active', true);
+    
+    if (error) {
+      console.error('Error fetching sniper users:', error);
+      return [];
+    }
+    
+    return data.map(row => row.chat_id);
+  }
+
+  async logSniperAlert(chatId, depositId, currency, depositRate, marketRate, percentageDiff) {
+    const { error } = await supabase
+      .from('sniper_alerts')
+      .insert({
+        chat_id: chatId,
+        deposit_id: depositId,
+        currency: currency,
+        deposit_rate: depositRate,
+        market_rate: marketRate,
+        percentage_diff: percentageDiff,
+        sent_at: new Date().toISOString()
+      });
+    
+    if (error) console.error('Error logging sniper alert:', error);
+  }
 }
 
 const db = new DatabaseManager();
+
+// Exchange rate fetcher
+let exchangeRatesCache = null;
+let lastRatesFetch = 0;
+const RATES_CACHE_DURATION = 60000; // 1 minute cache
+
+async function getExchangeRates() {
+  const now = Date.now();
+  
+  // Return cached rates if still fresh
+  if (exchangeRatesCache && (now - lastRatesFetch) < RATES_CACHE_DURATION) {
+    return exchangeRatesCache;
+  }
+  
+  try {
+    const response = await fetch(EXCHANGE_API_URL);
+    const data = await response.json();
+    
+    if (data.result === 'success') {
+      exchangeRatesCache = data.conversion_rates;
+      lastRatesFetch = now;
+      console.log('📊 Exchange rates updated');
+      return exchangeRatesCache;
+    } else {
+      console.error('❌ Exchange API error:', data);
+      return null;
+    }
+  } catch (error) {
+    console.error('❌ Failed to fetch exchange rates:', error);
+    return null;
+  }
+}
 
 // Enhanced WebSocket Provider with reconnection
 class ResilientWebSocketProvider {
@@ -362,7 +486,7 @@ class ResilientWebSocketProvider {
 // ZKP2P Escrow contract on Base
 const contractAddress = '0xca38607d85e8f6294dc10728669605e6664c2d70';
 
-// ABI with exact event definitions from the contract
+// ABI with exact event definitions from the contract (including sniper events)
 const abi = [
   `event IntentSignaled(
     bytes32 indexed intentHash,
@@ -388,6 +512,19 @@ const abi = [
   `event IntentPruned(
     bytes32 indexed intentHash,
     uint256 indexed depositId
+  )`,
+  `event DepositReceived(
+    uint256 indexed depositId,
+    address indexed depositor,  
+    address indexed token,
+    uint256 amount,
+    tuple intentAmountRange
+  )`,
+  `event DepositCurrencyAdded(
+    uint256 indexed depositId,
+    address indexed verifier,
+    bytes32 indexed currency,
+    uint256 conversionRate
   )`
 ];
 
@@ -407,6 +544,153 @@ const getPlatformName = (verifierAddress) => {
   const mapping = verifierMapping[verifierAddress.toLowerCase()];
   return mapping ? mapping.platform : `Unknown (${verifierAddress.slice(0, 6)}...${verifierAddress.slice(-4)})`;
 };
+
+// Helper functions
+const formatUSDC = (amount) => (Number(amount) / 1e6).toFixed(2);
+const formatTimestamp = (ts) => new Date(Number(ts) * 1000).toUTCString();
+const txLink = (hash) => `https://basescan.org/tx/${hash}`;
+const depositLink = (id) => `https://www.zkp2p.xyz/deposit/${id}`;
+
+const fiatCurrencyMap = {
+  '0x4dab77a640748de8588de6834d814a344372b205265984b969f3e97060955bfa': 'AED',
+  '0xcb83cbb58eaa5007af6cad99939e4581c1e1b50d65609c30f303983301524ef3': 'AUD',
+  '0x221012e06ebf59a20b82e3003cf5d6ee973d9008bdb6e2f604faa89a27235522': 'CAD',
+  '0xc9d84274fd58aa177cabff54611546051b74ad658b939babaad6282500300d36': 'CHF',
+  '0xfaaa9c7b2f09d6a1b0971574d43ca62c3e40723167c09830ec33f06cec921381': 'CNY',
+  '0xfff16d60be267153303bbfa66e593fb8d06e24ea5ef24b6acca5224c2ca6b907': 'EUR',
+  '0x90832e2dc3221e4d56977c1aa8f6a6706b9ad6542fbbdaac13097d0fa5e42e67': 'GBP',
+  '0xa156dad863111eeb529c4b3a2a30ad40e6dcff3b27d8f282f82996e58eee7e7d': 'HKD',
+  '0xc681c4652bae8bd4b59bec1cdb90f868d93cc9896af9862b196843f54bf254b3': 'IDR',
+  '0x313eda7ae1b79890307d32a78ed869290aeb24cc0e8605157d7e7f5a69fea425': 'ILS',
+  '0xfe13aafd831cb225dfce3f6431b34b5b17426b6bff4fccabe4bbe0fe4adc0452': 'JPY',
+  '0x589be49821419c9c2fbb26087748bf3420a5c13b45349828f5cac24c58bbaa7b': 'KES',
+  '0xa94b0702860cb929d0ee0c60504dd565775a058bf1d2a2df074c1db0a66ad582': 'MXN',
+  '0xf20379023279e1d79243d2c491be8632c07cfb116be9d8194013fb4739461b84': 'MYR',
+  '0xdbd9d34f382e9f6ae078447a655e0816927c7c3edec70bd107de1d34cb15172e': 'NZD',
+  '0x9a788fb083188ba1dfb938605bc4ce3579d2e085989490aca8f73b23214b7c1d': 'PLN',
+  '0xf998cbeba8b7a7e91d4c469e5fb370cdfa16bd50aea760435dc346008d78ed1f': 'SAR',
+  '0xc241cc1f9752d2d53d1ab67189223a3f330e48b75f73ebf86f50b2c78fe8df88': 'SGD',
+  '0x326a6608c2a353275bd8d64db53a9d772c1d9a5bc8bfd19dfc8242274d1e9dd4': 'THB',
+  '0x128d6c262d1afe2351c6e93ceea68e00992708cfcbc0688408b9a23c0c543db2': 'TRY',
+  '0xc4ae21aac0c6549d71dd96035b7e0bdb6c79ebdba8891b666115bc976d16a29e': 'USD',
+  '0xe85548baf0a6732cfcc7fc016ce4fd35ce0a1877057cfec6e166af4f106a3728': 'VND',
+  '0x53611f0b3535a2cfc4b8deb57fa961ca36c7b2c272dfe4cb239a29c48e549361': 'ZAR',
+  '0x8fd50654b7dd2dc839f7cab32800ba0c6f7f66e1ccf89b21c09405469c2175ec': 'ARS'
+};
+
+// Currency code mapping (reverse of fiatCurrencyMap) for sniper
+const currencyHashToCode = {
+  '0x4dab77a640748de8588de6834d814a344372b205265984b969f3e97060955bfa': 'AED',
+  '0xcb83cbb58eaa5007af6cad99939e4581c1e1b50d65609c30f303983301524ef3': 'AUD',
+  '0x221012e06ebf59a20b82e3003cf5d6ee973d9008bdb6e2f604faa89a27235522': 'CAD',
+  '0xc9d84274fd58aa177cabff54611546051b74ad658b939babaad6282500300d36': 'CHF',
+  '0xfaaa9c7b2f09d6a1b0971574d43ca62c3e40723167c09830ec33f06cec921381': 'CNY',
+  '0xfff16d60be267153303bbfa66e593fb8d06e24ea5ef24b6acca5224c2ca6b907': 'EUR',
+  '0x90832e2dc3221e4d56977c1aa8f6a6706b9ad6542fbbdaac13097d0fa5e42e67': 'GBP',
+  '0xa156dad863111eeb529c4b3a2a30ad40e6dcff3b27d8f282f82996e58eee7e7d': 'HKD',
+  '0xc681c4652bae8bd4b59bec1cdb90f868d93cc9896af9862b196843f54bf254b3': 'IDR',
+  '0x313eda7ae1b79890307d32a78ed869290aeb24cc0e8605157d7e7f5a69fea425': 'ILS',
+  '0xfe13aafd831cb225dfce3f6431b34b5b17426b6bff4fccabe4bbe0fe4adc0452': 'JPY',
+  '0x589be49821419c9c2fbb26087748bf3420a5c13b45349828f5cac24c58bbaa7b': 'KES',
+  '0xa94b0702860cb929d0ee0c60504dd565775a058bf1d2a2df074c1db0a66ad582': 'MXN',
+  '0xf20379023279e1d79243d2c491be8632c07cfb116be9d8194013fb4739461b84': 'MYR',
+  '0xdbd9d34f382e9f6ae078447a655e0816927c7c3edec70bd107de1d34cb15172e': 'NZD',
+  '0x9a788fb083188ba1dfb938605bc4ce3579d2e085989490aca8f73b23214b7c1d': 'PLN',
+  '0xf998cbeba8b7a7e91d4c469e5fb370cdfa16bd50aea760435dc346008d78ed1f': 'SAR',
+  '0xc241cc1f9752d2d53d1ab67189223a3f330e48b75f73ebf86f50b2c78fe8df88': 'SGD',
+  '0x326a6608c2a353275bd8d64db53a9d772c1d9a5bc8bfd19dfc8242274d1e9dd4': 'THB',
+  '0x128d6c262d1afe2351c6e93ceea68e00992708cfcbc0688408b9a23c0c543db2': 'TRY',
+  '0xc4ae21aac0c6549d71dd96035b7e0bdb6c79ebdba8891b666115bc976d16a29e': 'USD',
+  '0xe85548baf0a6732cfcc7fc016ce4fd35ce0a1877057cfec6e166af4f106a3728': 'VND',
+  '0x53611f0b3535a2cfc4b8deb57fa961ca36c7b2c272dfe4cb239a29c48e549361': 'ZAR',
+  '0x8fd50654b7dd2dc839f7cab32800ba0c6f7f66e1ccf89b21c09405469c2175ec': 'ARS'
+};
+
+const getFiatCode = (hash) => fiatCurrencyMap[hash.toLowerCase()] || '❓ Unknown';
+
+const formatConversionRate = (conversionRate, fiatCode) => {
+  const rate = (Number(conversionRate) / 1e18).toFixed(6);
+  return `${rate} ${fiatCode} / USDC`;
+};
+
+const createDepositKeyboard = (depositId) => {
+  return {
+    inline_keyboard: [[
+      {
+        text: `🔗 View Deposit ${depositId}`,
+        url: depositLink(depositId)
+      }
+    ]]
+  };
+};
+
+// Sniper logic
+async function checkSniperOpportunity(depositId, depositAmount, currencyHash, conversionRate) {
+  const currencyCode = currencyHashToCode[currencyHash.toLowerCase()];
+  if (!currencyCode || currencyCode === 'USD') return; // Skip USD or unknown currencies
+  
+  console.log(`🎯 Checking sniper opportunity for deposit ${depositId}, currency: ${currencyCode}`);
+  
+  // Get current exchange rates
+  const exchangeRates = await getExchangeRates();
+  if (!exchangeRates) {
+    console.log('❌ No exchange rates available for sniper check');
+    return;
+  }
+  
+  const marketRate = exchangeRates[currencyCode];
+  if (!marketRate) {
+    console.log(`❌ No market rate found for ${currencyCode}`);
+    return;
+  }
+  
+  // Calculate rates
+  const depositRate = Number(conversionRate) / 1e18; // Convert from wei
+  const percentageDiff = ((marketRate - depositRate) / marketRate) * 100;
+  
+  console.log(`📊 Market rate: ${marketRate} ${currencyCode}/USD`);
+  console.log(`📊 Deposit rate: ${depositRate} ${currencyCode}/USD`);
+  console.log(`📊 Percentage difference: ${percentageDiff.toFixed(2)}%`);
+  
+  // Only alert if deposit offers better rate (lower rate = better for buyer)
+  // Minimum 1% threshold to avoid spam
+  if (percentageDiff >= 1) {
+    const interestedUsers = await db.getUsersWithSniper(currencyCode);
+    
+    if (interestedUsers.length > 0) {
+      console.log(`🎯 SNIPER OPPORTUNITY! Alerting ${interestedUsers.length} users`);
+      
+      const formattedAmount = (Number(depositAmount) / 1e6).toFixed(0);
+      const message = `
+🎯 **SNIPER ALERT - ${currencyCode}**
+📊 New Deposit #${depositId}: ${formattedAmount} USDC
+💰 Deposit Rate: ${depositRate.toFixed(4)} ${currencyCode}/USD
+📈 Market Rate: ${marketRate.toFixed(4)} ${currencyCode}/USD  
+🔥 ${percentageDiff.toFixed(1)}% BETTER than market!
+
+*You get ${currencyCode} at ${percentageDiff.toFixed(1)}% discount!*
+`.trim();
+
+      for (const chatId of interestedUsers) {
+        await db.logSniperAlert(chatId, depositId, currencyCode, depositRate, marketRate, percentageDiff);
+        
+        bot.sendMessage(chatId, message, { 
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[
+              {
+                text: `🔗 Snipe Deposit ${depositId}`,
+                url: depositLink(depositId)
+              }
+            ]]
+          }
+        });
+      }
+    }
+  } else {
+    console.log(`📊 No opportunity: ${percentageDiff.toFixed(2)}% (threshold: 1%)`);
+  }
+}
 
 // Telegram commands - now using database
 bot.onText(/\/deposit (.+)/, async (msg, match) => {
@@ -473,6 +757,7 @@ bot.onText(/\/list/, async (msg) => {
   const userDeposits = await db.getUserDeposits(chatId);
   const userStates = await db.getUserDepositStates(chatId);
   const listeningAll = await db.getUserListenAll(chatId);
+  const snipers = await db.getUserSnipers(chatId);
   
   let message = '';
   
@@ -480,9 +765,13 @@ bot.onText(/\/list/, async (msg) => {
     message += `🌍 *Listening to ALL deposits*\n\n`;
   }
   
+  if (snipers.length > 0) {
+    message += `🎯 *Sniping currencies:* ${snipers.join(', ')}\n\n`;
+  }
+  
   const idsArray = Array.from(userDeposits).sort((a, b) => a - b);
-  if (idsArray.length === 0 && !listeningAll) {
-    bot.sendMessage(chatId, `📋 No deposits currently being tracked.`, { parse_mode: 'Markdown' });
+  if (idsArray.length === 0 && !listeningAll && snipers.length === 0) {
+    bot.sendMessage(chatId, `📋 No deposits currently being tracked and no snipers set.`, { parse_mode: 'Markdown' });
     return;
   }
   
@@ -503,7 +792,7 @@ bot.onText(/\/list/, async (msg) => {
 bot.onText(/\/clearall/, async (msg) => {
   const chatId = msg.chat.id;
   await db.clearUserData(chatId);
-  bot.sendMessage(chatId, `🗑️ Cleared all tracked deposit IDs and stopped listening to all deposits.`, { parse_mode: 'Markdown' });
+  bot.sendMessage(chatId, `🗑️ Cleared all tracked deposit IDs, stopped listening to all deposits, and cleared all sniper settings.`, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/status/, async (msg) => {
@@ -513,6 +802,7 @@ bot.onText(/\/status/, async (msg) => {
   const statusText = isConnected ? 'Connected' : 'Disconnected';
   const listeningAll = await db.getUserListenAll(chatId);
   const trackedCount = (await db.getUserDeposits(chatId)).size;
+  const snipers = await db.getUserSnipers(chatId);
   
   let message = `${statusEmoji} *WebSocket Status:* ${statusText}\n\n`;
   
@@ -522,7 +812,54 @@ bot.onText(/\/status/, async (msg) => {
     message += `📋 *Tracking:* ${trackedCount} specific deposits\n`;
   }
   
+  if (snipers.length > 0) {
+    message += `🎯 *Sniping:* ${snipers.join(', ')}\n`;
+  }
+  
   bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+});
+
+// Sniper commands
+bot.onText(/\/sniper (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const input = match[1].trim().toLowerCase();
+  
+  await db.initUser(chatId, msg.from.username, msg.from.first_name, msg.from.last_name);
+  
+  if (input === 'list') {
+    const snipers = await db.getUserSnipers(chatId);
+    if (snipers.length === 0) {
+      bot.sendMessage(chatId, `🎯 No sniper currencies set.`, { parse_mode: 'Markdown' });
+    } else {
+      bot.sendMessage(chatId, `🎯 *Sniping currencies:* ${snipers.join(', ')}`, { parse_mode: 'Markdown' });
+    }
+    return;
+  }
+  
+  if (input === 'clear') {
+    await db.removeUserSniper(chatId);
+    bot.sendMessage(chatId, `🎯 Cleared all sniper settings.`, { parse_mode: 'Markdown' });
+    return;
+  }
+  
+  const currency = input.toUpperCase();
+  const supportedCurrencies = Object.values(currencyHashToCode);
+  
+  if (!supportedCurrencies.includes(currency)) {
+    bot.sendMessage(chatId, `❌ Currency '${currency}' not supported.\n\n*Supported currencies:*\n${supportedCurrencies.join(', ')}`, { parse_mode: 'Markdown' });
+    return;
+  }
+  
+  await db.setUserSniper(chatId, currency);
+  bot.sendMessage(chatId, `🎯 *Sniper activated for ${currency}!*\n\nYou'll be alerted when new deposits offer better rates than market.`, { parse_mode: 'Markdown' });
+});
+
+bot.onText(/\/unsnipe (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const currency = match[1].trim().toUpperCase();
+  
+  await db.removeUserSniper(chatId, currency);
+  bot.sendMessage(chatId, `🎯 Stopped sniping ${currency}.`, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/help/, (msg) => {
@@ -530,75 +867,32 @@ bot.onText(/\/help/, (msg) => {
   const helpMessage = `
 🤖 *ZKP2P Tracker Commands:*
 
+**Deposit Tracking:**
 • \`/deposit all\` - Listen to ALL deposits (every event)
 • \`/deposit stop\` - Stop listening to all deposits
 • \`/deposit 123\` - Track a specific deposit
 • \`/deposit 123,456,789\` - Track multiple deposits
-• \`/deposit 123 456 789\` - Track multiple deposits (space separated)
 • \`/remove 123\` - Stop tracking specific deposit(s)
-• \`/list\` - Show tracking status and tracked deposits
-• \`/clearall\` - Stop all tracking (specific + all)
-• \`/status\` - Check WebSocket connection and tracking status
+
+**Sniper (Arbitrage Alerts):**
+• \`/sniper eur\` - Set up sniper alerts for EUR
+• \`/sniper list\` - Show active sniper currencies  
+• \`/sniper clear\` - Clear all sniper settings
+• \`/unsnipe eur\` - Stop sniping specific currency
+
+**General:**
+• \`/list\` - Show all tracking status (deposits + snipers)
+• \`/clearall\` - Stop all tracking and clear everything
+• \`/status\` - Check WebSocket connection and settings
 • \`/help\` - Show this help message
 
-*Note: Each user has their own tracking settings*
+*Note: Each user has their own settings. Sniper alerts you when deposits offer better exchange rates than market!*
 `.trim();
   
   bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
 
-// Helper functions
-const formatUSDC = (amount) => (Number(amount) / 1e6).toFixed(2);
-const formatTimestamp = (ts) => new Date(Number(ts) * 1000).toUTCString();
-const txLink = (hash) => `https://basescan.org/tx/${hash}`;
-const depositLink = (id) => `https://www.zkp2p.xyz/deposit/${id}`;
-
-const fiatCurrencyMap = {
-  '0x4dab77a640748de8588de6834d814a344372b205265984b969f3e97060955bfa': 'AED',
-  '0xcb83cbb58eaa5007af6cad99939e4581c1e1b50d65609c30f303983301524ef3': 'AUD',
-  '0x221012e06ebf59a20b82e3003cf5d6ee973d9008bdb6e2f604faa89a27235522': 'CAD',
-  '0xc9d84274fd58aa177cabff54611546051b74ad658b939babaad6282500300d36': 'CHF',
-  '0xfaaa9c7b2f09d6a1b0971574d43ca62c3e40723167c09830ec33f06cec921381': 'CNY',
-  '0xfff16d60be267153303bbfa66e593fb8d06e24ea5ef24b6acca5224c2ca6b907': 'EUR',
-  '0x90832e2dc3221e4d56977c1aa8f6a6706b9ad6542fbbdaac13097d0fa5e42e67': 'GBP',
-  '0xa156dad863111eeb529c4b3a2a30ad40e6dcff3b27d8f282f82996e58eee7e7d': 'HKD',
-  '0xc681c4652bae8bd4b59bec1cdb90f868d93cc9896af9862b196843f54bf254b3': 'IDR',
-  '0x313eda7ae1b79890307d32a78ed869290aeb24cc0e8605157d7e7f5a69fea425': 'ILS',
-  '0xfe13aafd831cb225dfce3f6431b34b5b17426b6bff4fccabe4bbe0fe4adc0452': 'JPY',
-  '0x589be49821419c9c2fbb26087748bf3420a5c13b45349828f5cac24c58bbaa7b': 'KES',
-  '0xa94b0702860cb929d0ee0c60504dd565775a058bf1d2a2df074c1db0a66ad582': 'MXN',
-  '0xf20379023279e1d79243d2c491be8632c07cfb116be9d8194013fb4739461b84': 'MYR',
-  '0xdbd9d34f382e9f6ae078447a655e0816927c7c3edec70bd107de1d34cb15172e': 'NZD',
-  '0x9a788fb083188ba1dfb938605bc4ce3579d2e085989490aca8f73b23214b7c1d': 'PLN',
-  '0xf998cbeba8b7a7e91d4c469e5fb370cdfa16bd50aea760435dc346008d78ed1f': 'SAR',
-  '0xc241cc1f9752d2d53d1ab67189223a3f330e48b75f73ebf86f50b2c78fe8df88': 'SGD',
-  '0x326a6608c2a353275bd8d64db53a9d772c1d9a5bc8bfd19dfc8242274d1e9dd4': 'THB',
-  '0x128d6c262d1afe2351c6e93ceea68e00992708cfcbc0688408b9a23c0c543db2': 'TRY',
-  '0xc4ae21aac0c6549d71dd96035b7e0bdb6c79ebdba8891b666115bc976d16a29e': 'USD',
-  '0xe85548baf0a6732cfcc7fc016ce4fd35ce0a1877057cfec6e166af4f106a3728': 'VND',
-  '0x53611f0b3535a2cfc4b8deb57fa961ca36c7b2c272dfe4cb239a29c48e549361': 'ZAR',
-  '0x8fd50654b7dd2dc839f7cab32800ba0c6f7f66e1ccf89b21c09405469c2175ec': 'ARS'
-};
-
-const getFiatCode = (hash) => fiatCurrencyMap[hash.toLowerCase()] || '❓ Unknown';
-
-const formatConversionRate = (conversionRate, fiatCode) => {
-  const rate = (Number(conversionRate) / 1e18).toFixed(6);
-  return `${rate} ${fiatCode} / USDC`;
-};
-
-const createDepositKeyboard = (depositId) => {
-  return {
-    inline_keyboard: [[
-      {
-        text: `🔗 View Deposit ${depositId}`,
-        url: depositLink(depositId)
-      }
-    ]]
-  };
-};
-
-// Event handler function - now using database
+// Event handler function - now with sniper support
 const handleContractEvent = async (log) => {
   console.log('\n📦 Raw log received:');
   console.log(log);
@@ -789,6 +1083,15 @@ const handleContractEvent = async (log) => {
       }, 2000);
     }
 
+    // NEW: Handle DepositCurrencyAdded for sniper functionality
+    if (name === 'DepositCurrencyAdded') {
+      const { depositId, currency, conversionRate } = parsed.args;
+      console.log('🎯 DepositCurrencyAdded detected:', Number(depositId));
+      
+      // Check for sniper opportunity
+      await checkSniperOpportunity(Number(depositId), 0, currency, conversionRate);
+    }
+
   } catch (err) {
     console.error('❌ Failed to parse log:', err.message);
     console.log('👀 Raw log (unparsed):', log);
@@ -806,7 +1109,7 @@ const resilientProvider = new ResilientWebSocketProvider(
 );
 
 // Add startup message
-console.log('🤖 ZKP2P Telegram Bot Started (Supabase Integration with Auto-Reconnect)');
+console.log('🤖 ZKP2P Telegram Bot Started (Supabase Integration with Auto-Reconnect + Sniper)');
 console.log('🔍 Listening for contract events...');
 console.log(`📡 Contract: ${contractAddress}`);
 
