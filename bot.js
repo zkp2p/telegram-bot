@@ -308,20 +308,42 @@ async removeUserSniper(chatId, currency = null, platform = null) {
   if (error) console.error('Error removing sniper:', error);
 }
 
+async setUserSniper(chatId, currency, platform = null) {
+  // Always insert - no deactivation needed
+  const { error } = await supabase
+    .from('user_snipers')
+    .insert({
+      chat_id: chatId,
+      currency: currency.toUpperCase(),
+      platform: platform ? platform.toLowerCase() : null,
+      created_at: new Date().toISOString()
+    });
+  
+  if (error) {
+    console.error('Error setting sniper:', error);
+    return false;
+  }
+  return true;
+}
+
 async getUserSnipers(chatId) {
+  // Get snipers created in the last 30 days (or whatever timeframe)
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  
   const { data, error } = await supabase
     .from('user_snipers')
-    .select('currency, platform')
+    .select('currency, platform, created_at')
     .eq('chat_id', chatId)
-    .eq('is_active', true)
-    .order('created_at', { ascending: false }); // Get newest first
+    .gte('created_at', thirtyDaysAgo.toISOString())
+    .order('created_at', { ascending: false });
   
   if (error) {
     console.error('Error fetching user snipers:', error);
     return [];
   }
   
-  // Remove duplicates - keep only the newest entry for each currency+platform combo
+  // Deduplicate - keep only the newest entry for each currency+platform combo
   const unique = new Map();
   data.forEach(row => {
     const key = `${row.currency}-${row.platform}`;
@@ -331,26 +353,6 @@ async getUserSnipers(chatId) {
   });
   
   return Array.from(unique.values());
-}
-
-async getUsersWithSniper(currency, platform) {
-  let query = supabase
-    .from('user_snipers')
-    .select('chat_id')
-    .eq('currency', currency.toUpperCase())
-    .eq('is_active', true);
-  
-  // Get users who want this currency on ANY platform OR this specific platform
-  query = query.or(`platform.is.null,platform.eq.${platform.toLowerCase()}`);
-  
-  const { data, error } = await query;
-  
-  if (error) {
-    console.error('Error fetching sniper users:', error);
-    return [];
-  }
-  
-  return data.map(row => row.chat_id);
 }
 
   async logSniperAlert(chatId, depositId, currency, depositRate, marketRate, percentageDiff) {
