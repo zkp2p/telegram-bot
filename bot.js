@@ -13,9 +13,7 @@ const supabase = createClient(
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
 // Exchange rate API configuration
-const EXCHANGE_API_KEY = process.env.EXCHANGE_API_KEY;
-const EXCHANGE_API_URL = `https://v6.exchangerate-api.com/v6/${EXCHANGE_API_KEY}/latest/USD`;
-
+const EXCHANGE_API_URL = `https://v6.exchangerate-api.com/v6/${process.env.EXCHANGE_API_KEY}/latest/USD`;
 
 // Database helper functions
 class DatabaseManager {
@@ -362,8 +360,27 @@ async function getExchangeRates() {
   }
   
   try {
-    const response = await fetch(EXCHANGE_API_URL);
-    const data = await response.json();
+    const https = require('https');
+    
+    const data = await new Promise((resolve, reject) => {
+      https.get(EXCHANGE_API_URL, (res) => {
+        let data = '';
+        
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            reject(e);
+          }
+        });
+      }).on('error', (err) => {
+        reject(err);
+      });
+    });
     
     if (data.result === 'success') {
       exchangeRatesCache = data.conversion_rates;
@@ -517,10 +534,16 @@ const abi = [
   )`,
   `event DepositReceived(
     uint256 indexed depositId,
-    address indexed depositor,  
+    address indexed depositor,
     address indexed token,
     uint256 amount,
     tuple(uint256,uint256) intentAmountRange
+  )`,
+  `event DepositVerifierAdded(
+    uint256 indexed depositId,
+    address indexed verifier,
+    bytes32 indexed payeeDetailsHash,
+    address intentGatingService
   )`,
   `event DepositCurrencyAdded(
     uint256 indexed depositId,
@@ -628,7 +651,7 @@ const createDepositKeyboard = (depositId) => {
 
 // Sniper logic
 async function checkSniperOpportunity(depositId, depositAmount, currencyHash, conversionRate) {
-  const currencyCode = currencyHashToCode[currencyHash.toLowerCase()];
+  const currencyCode = fiatCurrencyMap[currencyHash.toLowerCase()];
   if (!currencyCode || currencyCode === 'USD') return; // Skip USD or unknown currencies
   
   console.log(`🎯 Checking sniper opportunity for deposit ${depositId}, currency: ${currencyCode}`);
@@ -845,7 +868,7 @@ bot.onText(/\/sniper (.+)/, async (msg, match) => {
   }
   
   const currency = input.toUpperCase();
-  const supportedCurrencies = Object.values(currencyHashToCode);
+  const supportedCurrencies = Object.values(fiatCurrencyMap);
   
   if (!supportedCurrencies.includes(currency)) {
     bot.sendMessage(chatId, `❌ Currency '${currency}' not supported.\n\n*Supported currencies:*\n${supportedCurrencies.join(', ')}`, { parse_mode: 'Markdown' });
@@ -1085,13 +1108,32 @@ const handleContractEvent = async (log) => {
       }, 2000);
     }
 
+    // NEW: Handle DepositReceived for logging deposit amounts
+    if (name === 'DepositReceived') {
+      const { depositId, depositor, token, amount } = parsed.args;
+      console.log('💰 DepositReceived detected:', Number(depositId), 'Amount:', formatUSDC(amount), 'USDC');
+      
+      // Store deposit amount for later use in sniper logic
+      // We'll need this when DepositCurrencyAdded fires
+      global.depositAmounts = global.depositAmounts || new Map();
+      global.depositAmounts.set(Number(depositId), amount);
+    }
+
+    // NEW: Handle DepositVerifierAdded for platform info
+    if (name === 'DepositVerifierAdded') {
+      const { depositId, verifier } = parsed.args;
+      const platformName = getPlatformName(verifier);
+      console.log('🏛️ DepositVerifierAdded detected:', Number(depositId), 'Platform:', platformName);
+    }
+
     // NEW: Handle DepositCurrencyAdded for sniper functionality
     if (name === 'DepositCurrencyAdded') {
       const { depositId, currency, conversionRate } = parsed.args;
+      const depositAmount = global.depositAmounts?.get(Number(depositId)) || 0;
       console.log('🎯 DepositCurrencyAdded detected:', Number(depositId));
       
-      // Check for sniper opportunity
-      await checkSniperOpportunity(Number(depositId), 0, currency, conversionRate);
+      // Check for sniper opportunity with actual deposit amount
+      await checkSniperOpportunity(Number(depositId), depositAmount, currency, conversionRate);
     }
 
   } catch (err) {
