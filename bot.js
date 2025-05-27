@@ -269,28 +269,8 @@ class DatabaseManager {
 
   // Sniper-related database methods
 // Update these methods in your DatabaseManager class:
-
 async setUserSniper(chatId, currency, platform = null) {
-  if (platform === null) {
-    // If setting "all platforms" (/sniper eur), deactivate ALL existing snipers for this currency
-    await supabase
-      .from('user_snipers')
-      .update({ is_active: false, updated_at: new Date().toISOString() })
-      .eq('chat_id', chatId)
-      .eq('currency', currency.toUpperCase());
-  } else {
-    // If setting specific platform (/sniper eur wise), only deactivate:
-    // 1. Any existing "all platforms" sniper for this currency (platform = null)
-    // 2. Any existing sniper for this exact same currency+platform combo
-    await supabase
-      .from('user_snipers')
-      .update({ is_active: false, updated_at: new Date().toISOString() })
-      .eq('chat_id', chatId)
-      .eq('currency', currency.toUpperCase())
-      .or(`platform.is.null,platform.eq.${platform.toLowerCase()}`);
-  }
-
-  // Then insert the new one
+  // No deactivation logic at all - just insert a new active record
   const { error } = await supabase
     .from('user_snipers')
     .insert({
@@ -330,17 +310,24 @@ async getUserSnipers(chatId) {
     .from('user_snipers')
     .select('currency, platform')
     .eq('chat_id', chatId)
-    .eq('is_active', true);
+    .eq('is_active', true)
+    .order('created_at', { ascending: false }); // Get newest first
   
   if (error) {
     console.error('Error fetching user snipers:', error);
     return [];
   }
   
-  return data.map(row => ({
-    currency: row.currency,
-    platform: row.platform
-  }));
+  // Remove duplicates - keep only the newest entry for each currency+platform combo
+  const unique = new Map();
+  data.forEach(row => {
+    const key = `${row.currency}-${row.platform}`;
+    if (!unique.has(key)) {
+      unique.set(key, row);
+    }
+  });
+  
+  return Array.from(unique.values());
 }
 
 async getUsersWithSniper(currency, platform) {
