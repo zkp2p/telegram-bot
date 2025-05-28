@@ -435,8 +435,27 @@ const initializeBot = async () => {
   try {
     console.log('🔄 Bot initialization starting...');
     
-    // Wait for bot to be fully ready
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    // Test Telegram bot connection first
+    try {
+      const botInfo = await bot.getMe();
+      console.log(`🤖 Bot connected: @${botInfo.username} (${botInfo.first_name})`);
+    } catch (error) {
+      console.error('❌ Failed to connect to Telegram bot:', error.message);
+      throw error;
+    }
+    
+    // Test database connection
+    try {
+      const { data, error } = await supabase.from('users').select('chat_id').limit(1);
+      if (error) throw error;
+      console.log('✅ Database connection successful');
+    } catch (error) {
+      console.error('❌ Database connection failed:', error.message);
+      throw error;
+    }
+    
+    // Wait for all systems to be ready
+    await new Promise(resolve => setTimeout(resolve, 3000));
     
     console.log('📝 Initializing user in database...');
     await db.initUser(ZKP2P_GROUP_ID, 'zkp2p_channel');
@@ -446,51 +465,32 @@ const initializeBot = async () => {
 
     console.log(`📤 Attempting to send message to topic ${ZKP2P_TOPIC_ID} in group ${ZKP2P_GROUP_ID}`);
     
-    // IMPORTANT: Use reply_to_message_id to ensure it goes to the topic
-    const result = await bot.sendMessage(ZKP2P_GROUP_ID, '/deposit all', {
+    // Test message sending with better error handling
+    const result = await bot.sendMessage(ZKP2P_GROUP_ID, '🔄 Bot restarted and ready!', {
       parse_mode: 'Markdown',
       message_thread_id: ZKP2P_TOPIC_ID,
-      // Optional: Reply to the topic creation message to ensure it stays in topic
-      // reply_to_message_id: 5385  // Uncomment if needed
     });
 
-    console.log('✅ Message sent successfully!');
-    console.log('📋 Message ID:', result.message_id);
-    console.log('📋 Chat ID:', result.chat.id);
-    console.log('📋 Thread ID:', result.message_thread_id);
-    console.log('📋 Is topic message:', result.is_topic_message);
-    
-    // Verify it went to the right place
-    if (result.message_thread_id === ZKP2P_TOPIC_ID) {
-      console.log('✅ Message correctly sent to topic!');
-    } else {
-      console.log('❌ Message went to wrong location!');
-      console.log('Expected topic:', ZKP2P_TOPIC_ID);
-      console.log('Actual topic:', result.message_thread_id);
-    }
+    console.log('✅ Initialization message sent successfully!');
+    console.log('📋 Message details:', {
+      message_id: result.message_id,
+      chat_id: result.chat.id,
+      thread_id: result.message_thread_id,
+      is_topic_message: result.is_topic_message
+    });
     
   } catch (err) {
-    console.error('❌ Failed to send message to topic:', err);
+    console.error('❌ Bot initialization failed:', err);
     console.error('❌ Error code:', err.code);
     console.error('❌ Error message:', err.message);
     
     if (err.response?.body) {
-      console.error('❌ Telegram API response:', err.response.body);
+      console.error('❌ Telegram API response:', JSON.stringify(err.response.body, null, 2));
     }
     
-    // Check if it's a topic-specific error
-    if (err.message.includes('thread') || err.message.includes('topic')) {
-      console.log('🔍 This appears to be a topic-related error');
-      
-      // Try sending to general channel as fallback to test bot permissions
-      try {
-        console.log('🔄 Testing general channel access...');
-        const fallback = await bot.sendMessage(ZKP2P_GROUP_ID, 'Bot test - general channel');
-        console.log('✅ General channel works, topic might be closed/archived');
-      } catch (fallbackErr) {
-        console.error('❌ General channel also failed:', fallbackErr.message);
-      }
-    }
+    // Schedule retry
+    console.log('🔄 Retrying initialization in 30 seconds...');
+    setTimeout(initializeBot, 30000);
   }
 };
 
@@ -531,7 +531,8 @@ async function getExchangeRates() {
   }
 }
 
-// Enhanced WebSocket Provider with reconnection
+
+// Enhanced WebSocket Provider with proper cleanup and restart
 class ResilientWebSocketProvider {
   constructor(url, contractAddress, eventHandler) {
     this.url = url;
@@ -542,26 +543,35 @@ class ResilientWebSocketProvider {
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 50;
     this.isConnecting = false;
+    this.isDestroyed = false; // Add destroyed flag
     this.provider = null;
+    this.reconnectTimer = null; // Track reconnection timer
     
     this.connect();
   }
 
   async connect() {
-    if (this.isConnecting) return;
+    if (this.isConnecting || this.isDestroyed) return;
     this.isConnecting = true;
 
     try {
       console.log(`🔌 Attempting WebSocket connection (attempt ${this.reconnectAttempts + 1})`);
       
+      // Properly cleanup existing provider
       if (this.provider) {
-        this.provider.removeAllListeners();
-        this.provider.destroy?.();
+        await this.cleanup();
       }
 
       this.provider = new WebSocketProvider(this.url);
       this.setupEventListeners();
-      await this.provider.getNetwork();
+      
+      // Test connection with timeout
+      const networkPromise = this.provider.getNetwork();
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Connection timeout')), 10000)
+      );
+      
+      await Promise.race([networkPromise, timeoutPromise]);
       
       console.log('✅ WebSocket connected successfully');
       
@@ -574,38 +584,90 @@ class ResilientWebSocketProvider {
     } catch (error) {
       console.error('❌ WebSocket connection failed:', error.message);
       this.isConnecting = false;
-      this.scheduleReconnect();
+      
+      // Only schedule reconnect if not destroyed
+      if (!this.isDestroyed) {
+        this.scheduleReconnect();
+      }
+    }
+  }
+
+  async cleanup() {
+    if (this.provider) {
+      try {
+        // Remove all listeners first
+        this.provider.removeAllListeners();
+        
+        // Close WebSocket connection if it exists
+        if (this.provider._websocket) {
+          this.provider._websocket.removeAllListeners();
+          if (this.provider._websocket.readyState === 1) { // OPEN
+            this.provider._websocket.close();
+          }
+        }
+        
+        // Destroy provider
+        if (typeof this.provider.destroy === 'function') {
+          await this.provider.destroy();
+        }
+        
+        console.log('🧹 Cleaned up existing provider');
+      } catch (error) {
+        console.error('⚠️ Error during cleanup:', error.message);
+      }
     }
   }
 
   setupEventListeners() {
-  if (this.provider._websocket) {
-    this.provider._websocket.on('close', (code, reason) => {
-      console.log(`🔌 WebSocket closed: ${code} - ${reason}`);
-      this.scheduleReconnect();
+    if (!this.provider || this.isDestroyed) return;
+    
+    if (this.provider._websocket) {
+      this.provider._websocket.on('close', (code, reason) => {
+        console.log(`🔌 WebSocket closed: ${code} - ${reason}`);
+        if (!this.isDestroyed) {
+          this.scheduleReconnect();
+        }
       });
   
-    this.provider._websocket.on('error', (error) => {
-      console.error('❌ WebSocket error:', error.message);
-      this.scheduleReconnect();
+      this.provider._websocket.on('error', (error) => {
+        console.error('❌ WebSocket error:', error.message);
+        if (!this.isDestroyed) {
+          this.scheduleReconnect();
+        }
+      });
+
+      // Add ping/pong for connection health
+      this.provider._websocket.on('ping', () => {
+        console.log('🏓 WebSocket ping received');
+      });
+
+      this.provider._websocket.on('pong', () => {
+        console.log('🏓 WebSocket pong received');
       });
     }
   }
 
   setupContractListening() {
-    if (!this.provider) return;
+    if (!this.provider || this.isDestroyed) return;
     
     try {
       this.provider.on({ address: this.contractAddress.toLowerCase() }, this.eventHandler);
       console.log(`👂 Listening for events on contract: ${this.contractAddress}`);
     } catch (error) {
       console.error('❌ Failed to set up contract listening:', error.message);
-      this.scheduleReconnect();
+      if (!this.isDestroyed) {
+        this.scheduleReconnect();
+      }
     }
   }
 
   scheduleReconnect() {
-    if (this.isConnecting) return;
+    if (this.isConnecting || this.isDestroyed) return;
+    
+    // Clear existing timer if any
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
     
     this.reconnectAttempts++;
     
@@ -621,15 +683,59 @@ class ResilientWebSocketProvider {
     
     console.log(`⏰ Scheduling reconnection in ${delay}ms (attempt ${this.reconnectAttempts})`);
     
-    setTimeout(() => {
-      this.connect();
+    this.reconnectTimer = setTimeout(() => {
+      if (!this.isDestroyed) {
+        this.connect();
+      }
     }, delay);
+  }
+
+  // Add manual restart method
+  async restart() {
+    console.log('🔄 Manual restart initiated...');
+    this.reconnectAttempts = 0;
+    this.reconnectDelay = 1000;
+    
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    
+    await this.cleanup();
+    
+    // Wait a bit before reconnecting
+    setTimeout(() => {
+      if (!this.isDestroyed) {
+        this.connect();
+      }
+    }, 2000);
+  }
+
+  // Add proper destroy method
+  async destroy() {
+    console.log('🛑 Destroying WebSocket provider...');
+    this.isDestroyed = true;
+    
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    
+    await this.cleanup();
+    this.provider = null;
   }
 
   get currentProvider() {
     return this.provider;
   }
+
+  get isConnected() {
+    return this.provider && 
+           this.provider._websocket && 
+           this.provider._websocket.readyState === 1; // WebSocket.OPEN
+  }
 }
+
 
 // ZKP2P Escrow contract on Base
 const contractAddress = '0xca38607d85e8f6294dc10728669605e6664c2d70';
@@ -969,31 +1075,65 @@ bot.onText(/\/clearall/, async (msg) => {
 
 bot.onText(/\/status/, async (msg) => {
   const chatId = msg.chat.id;
-  const isConnected = resilientProvider.currentProvider !== null;
-  const statusEmoji = isConnected ? '🟢' : '🔴';
-  const statusText = isConnected ? 'Connected' : 'Disconnected';
-  const listeningAll = await db.getUserListenAll(chatId);
-  const trackedCount = (await db.getUserDeposits(chatId)).size;
-  const snipers = await db.getUserSnipers(chatId);
   
-  let message = `${statusEmoji} *WebSocket Status:* ${statusText}\n\n`;
-  
-  if (listeningAll) {
-    message += `🌍 *Listening to:* ALL deposits\n`;
-  } else {
-    message += `📋 *Tracking:* ${trackedCount} specific deposits\n`;
+  try {
+    const wsConnected = resilientProvider?.isConnected || false;
+    const wsStatus = wsConnected ? '🟢 Connected' : '🔴 Disconnected';
+    
+    // Test database connection
+    let dbStatus = '🔴 Disconnected';
+    try {
+      const { data, error } = await supabase.from('users').select('chat_id').limit(1);
+      if (!error) dbStatus = '🟢 Connected';
+    } catch (error) {
+      console.error('Database test failed:', error);
+    }
+    
+    // Test Telegram connection
+    let botStatus = '🔴 Disconnected';
+    try {
+      await bot.getMe();
+      botStatus = '🟢 Connected';
+    } catch (error) {
+      console.error('Bot test failed:', error);
+    }
+    
+    const listeningAll = await db.getUserListenAll(chatId);
+    const trackedCount = (await db.getUserDeposits(chatId)).size;
+    const snipers = await db.getUserSnipers(chatId);
+    
+    let message = `🔧 *System Status:*\n\n`;
+    message += `• *WebSocket:* ${wsStatus}\n`;
+    message += `• *Database:* ${dbStatus}\n`;
+    message += `• *Telegram:* ${botStatus}\n\n`;
+    message += `📊 *Your Settings:*\n`;
+    
+    if (listeningAll) {
+      message += `• *Listening to:* ALL deposits\n`;
+    } else {
+      message += `• *Tracking:* ${trackedCount} specific deposits\n`;
+    }
+    
+    if (snipers.length > 0) {
+      message += `• *Sniping:* `;
+      const sniperTexts = snipers.map(sniper => {
+        const platformText = sniper.platform ? ` on ${sniper.platform}` : '';
+        return `${sniper.currency}${platformText}`;
+      });
+      message += `${sniperTexts.join(', ')}\n`;
+    }
+    
+    // Add reconnection info if disconnected
+    if (!wsConnected && resilientProvider) {
+      message += `\n⚠️ *WebSocket reconnection attempts:* ${resilientProvider.reconnectAttempts}/${resilientProvider.maxReconnectAttempts}`;
+    }
+    
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    
+  } catch (error) {
+    console.error('Status command failed:', error);
+    bot.sendMessage(chatId, '❌ Failed to get status', { parse_mode: 'Markdown' });
   }
-  
-  if (snipers.length > 0) {
-    message += `🎯 *Sniping:* `;
-    const sniperTexts = snipers.map(sniper => {
-      const platformText = sniper.platform ? ` on ${sniper.platform}` : '';
-      return `${sniper.currency}${platformText}`;
-    });
-    message += `${sniperTexts.join(', ')}\n`;
-  }
-  
-  bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 });
 
 // Sniper commands
@@ -1407,30 +1547,69 @@ console.log('🤖 ZKP2P Telegram Bot Started (Supabase Integration with Auto-Rec
 console.log('🔍 Listening for contract events...');
 console.log(`📡 Contract: ${contractAddress}`);
 
+// Improved graceful shutdown with proper cleanup
+const gracefulShutdown = async (signal) => {
+  console.log(`🔄 Received ${signal}, shutting down gracefully...`);
+  
+  try {
+    // Stop accepting new connections
+    if (resilientProvider) {
+      await resilientProvider.destroy();
+    }
+    
+    // Stop the Telegram bot
+    if (bot) {
+      console.log('🛑 Stopping Telegram bot...');
+      await bot.stopPolling();
+    }
+    
+    // Close database connections (if any)
+    console.log('🛑 Cleaning up resources...');
+    
+    console.log('✅ Graceful shutdown completed');
+    process.exit(0);
+    
+  } catch (error) {
+    console.error('❌ Error during shutdown:', error);
+    process.exit(1);
+  }
+};
+
 // Enhanced error handlers
 process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught exception:', error);
+  console.error('Stack trace:', error.stack);
+  
+  // Attempt to restart WebSocket if it's a connection issue
+  if (error.message.includes('WebSocket') || error.message.includes('ECONNRESET')) {
+    console.log('🔄 Attempting to restart WebSocket due to connection error...');
+    if (resilientProvider) {
+      resilientProvider.restart();
+    }
+  }
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('❌ Unhandled rejection at:', promise, 'reason:', reason);
+  
+  // Attempt to restart WebSocket if it's a connection issue
+  if (reason && reason.message && 
+      (reason.message.includes('WebSocket') || reason.message.includes('ECONNRESET'))) {
+    console.log('🔄 Attempting to restart WebSocket due to rejection...');
+    if (resilientProvider) {
+      resilientProvider.restart();
+    }
+  }
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('🔄 Received SIGTERM, shutting down gracefully...');
-  if (resilientProvider.currentProvider) {
-    resilientProvider.currentProvider.removeAllListeners();
-    resilientProvider.currentProvider.destroy?.();
-  }
-  process.exit(0);
-});
+// Graceful shutdown handlers
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-process.on('SIGINT', () => {
-  console.log('🔄 Received SIGINT, shutting down gracefully...');
-  if (resilientProvider.currentProvider) {
-    resilientProvider.currentProvider.removeAllListeners();
-    resilientProvider.currentProvider.destroy?.();
+// Health check interval
+setInterval(async () => {
+  if (resilientProvider && !resilientProvider.isConnected) {
+    console.log('🔍 Health check: WebSocket disconnected, attempting restart...');
+    await resilientProvider.restart();
   }
-  process.exit(0);
-});
+}, 60000); // Check every minute
