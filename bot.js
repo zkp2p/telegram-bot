@@ -685,14 +685,6 @@ class ResilientWebSocketProvider {
         this.scheduleReconnect();
       }
     });
-
-    this.provider.on('disconnect', () => {
-      console.log('🔌 Provider disconnected');
-      this.stopKeepAlive();
-      if (!this.isDestroyed) {
-        this.scheduleReconnect();
-      }
-    });
   }
 
   startKeepAlive() {
