@@ -1129,11 +1129,15 @@ const handleContractEvent = async (log) => {
 `.trim();
           
           interestedUsers.forEach(chatId => {
-            bot.sendMessage(chatId, message, { 
+            const sendOptions = { 
               parse_mode: 'Markdown', 
               disable_web_page_preview: true,
               reply_markup: createDepositKeyboard(topicDepositId)
-            });
+            };
+            if (chatId === ZKP2P_GROUP_ID) {
+              sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
+            }
+            bot.sendMessage(chatId, message, sendOptions);
           });
         }
       }
@@ -1182,11 +1186,15 @@ const handleContractEvent = async (log) => {
         await db.updateDepositStatus(chatId, id, 'signaled', intentHash);
         await db.logEventNotification(chatId, id, 'signaled');
         
-        bot.sendMessage(chatId, message, { 
+        const sendOptions = { 
           parse_mode: 'Markdown', 
           disable_web_page_preview: true,
           reply_markup: createDepositKeyboard(id)
-        });
+        };
+        if (chatId === ZKP2P_GROUP_ID) {
+          sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
+        }
+        bot.sendMessage(chatId, message, sendOptions);
       }
     }
 
@@ -1230,11 +1238,15 @@ const handleContractEvent = async (log) => {
         await db.updateDepositStatus(chatId, id, 'fulfilled', intentHash);
         await db.logEventNotification(chatId, id, 'fulfilled');
         
-        bot.sendMessage(chatId, message, { 
+        const sendOptions = { 
           parse_mode: 'Markdown', 
           disable_web_page_preview: true,
           reply_markup: createDepositKeyboard(id)
-        });
+        };
+        if (chatId === ZKP2P_GROUP_ID) {
+          sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
+        }
+        bot.sendMessage(chatId, message, sendOptions);
       }
     }
 
@@ -1284,11 +1296,15 @@ if (name === 'IntentPruned') {
         await db.updateDepositStatus(chatId, id, 'pruned', intentHash);
         await db.logEventNotification(chatId, id, 'pruned');
         
-        bot.sendMessage(chatId, message, { 
+        const sendOptions = { 
           parse_mode: 'Markdown', 
           disable_web_page_preview: true,
           reply_markup: createDepositKeyboard(id)
-        });
+        };
+        if (chatId === ZKP2P_GROUP_ID) {
+          sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
+        }
+        bot.sendMessage(chatId, message, sendOptions);
       }
       
       pendingPrunedEvents.delete(txHash);
