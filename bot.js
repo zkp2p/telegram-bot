@@ -9,32 +9,7 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
-const db = require('./db');
-
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
-
-const ZKP2P_GROUP_ID = -1001928949520;
-const ZKP2P_TOPIC_ID = 5385;
-
-(async () => {
-  try {
-    // Optional DB setup
-    await db.initUser(ZKP2P_GROUP_ID, 'zkp2p_channel');
-    await db.setUserListenAll(ZKP2P_GROUP_ID, true);
-
-    // ✅ THIS is the line that sends "/deposit all" into the topic
-    await bot.sendMessage(ZKP2P_GROUP_ID, '/deposit all', {
-      parse_mode: 'Markdown',
-      message_thread_id: ZKP2P_TOPIC_ID
-    });
-
-    console.log('✅ Sent /deposit all to zk_p2p topic');
-  } catch (err) {
-    console.error('❌ Failed to send /deposit all to topic:', err.message);
-  }
-})();
-
-
 
 // Exchange rate API configuration
 const EXCHANGE_API_URL = `https://v6.exchangerate-api.com/v6/${process.env.EXCHANGE_API_KEY}/latest/USD`;
@@ -452,6 +427,29 @@ async getUserSnipers(chatId) {
 
 
 const db = new DatabaseManager();
+
+const ZKP2P_GROUP_ID = -1001928949520;
+const ZKP2P_TOPIC_ID = 5385;
+
+(async () => {
+  try {
+    // Optional DB setup
+    await db.initUser(ZKP2P_GROUP_ID, 'zkp2p_channel');
+    await db.setUserListenAll(ZKP2P_GROUP_ID, true);
+
+    // ✅ THIS is the line that sends "/deposit all" into the topic
+    await bot.sendMessage(ZKP2P_GROUP_ID, '/deposit all', {
+      parse_mode: 'Markdown',
+      message_thread_id: ZKP2P_TOPIC_ID
+    });
+
+    console.log('✅ Sent /deposit all to zk_p2p topic');
+  } catch (err) {
+    console.error('❌ Failed to send /deposit all to topic:', err.message);
+  }
+})();
+
+
 
 // Exchange rate fetcher
 let exchangeRatesCache = null;
