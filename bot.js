@@ -431,23 +431,71 @@ const db = new DatabaseManager();
 const ZKP2P_GROUP_ID = -1001928949520;
 const ZKP2P_TOPIC_ID = 5385;
 
-(async () => {
+const initializeBot = async () => {
   try {
-    // Optional DB setup
+    console.log('🔄 Bot initialization starting...');
+    
+    // Wait for bot to be fully ready
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    console.log('📝 Initializing user in database...');
     await db.initUser(ZKP2P_GROUP_ID, 'zkp2p_channel');
+    
+    console.log('📝 Setting listen all to true...');
     await db.setUserListenAll(ZKP2P_GROUP_ID, true);
 
-    // ✅ THIS is the line that sends "/deposit all" into the topic
-    await bot.sendMessage(ZKP2P_GROUP_ID, '/deposit all', {
+    console.log(`📤 Attempting to send message to topic ${ZKP2P_TOPIC_ID} in group ${ZKP2P_GROUP_ID}`);
+    
+    // IMPORTANT: Use reply_to_message_id to ensure it goes to the topic
+    const result = await bot.sendMessage(ZKP2P_GROUP_ID, '/deposit all', {
       parse_mode: 'Markdown',
-      message_thread_id: ZKP2P_TOPIC_ID
+      message_thread_id: ZKP2P_TOPIC_ID,
+      // Optional: Reply to the topic creation message to ensure it stays in topic
+      // reply_to_message_id: 5385  // Uncomment if needed
     });
 
-    console.log('✅ Sent /deposit all to zk_p2p topic');
+    console.log('✅ Message sent successfully!');
+    console.log('📋 Message ID:', result.message_id);
+    console.log('📋 Chat ID:', result.chat.id);
+    console.log('📋 Thread ID:', result.message_thread_id);
+    console.log('📋 Is topic message:', result.is_topic_message);
+    
+    // Verify it went to the right place
+    if (result.message_thread_id === ZKP2P_TOPIC_ID) {
+      console.log('✅ Message correctly sent to topic!');
+    } else {
+      console.log('❌ Message went to wrong location!');
+      console.log('Expected topic:', ZKP2P_TOPIC_ID);
+      console.log('Actual topic:', result.message_thread_id);
+    }
+    
   } catch (err) {
-    console.error('❌ Failed to send /deposit all to topic:', err.message);
+    console.error('❌ Failed to send message to topic:', err);
+    console.error('❌ Error code:', err.code);
+    console.error('❌ Error message:', err.message);
+    
+    if (err.response?.body) {
+      console.error('❌ Telegram API response:', err.response.body);
+    }
+    
+    // Check if it's a topic-specific error
+    if (err.message.includes('thread') || err.message.includes('topic')) {
+      console.log('🔍 This appears to be a topic-related error');
+      
+      // Try sending to general channel as fallback to test bot permissions
+      try {
+        console.log('🔄 Testing general channel access...');
+        const fallback = await bot.sendMessage(ZKP2P_GROUP_ID, 'Bot test - general channel');
+        console.log('✅ General channel works, topic might be closed/archived');
+      } catch (fallbackErr) {
+        console.error('❌ General channel also failed:', fallbackErr.message);
+      }
+    }
   }
-})();
+};
+
+// Start initialization after a delay
+setTimeout(initializeBot, 3000);
 
 
 
