@@ -624,7 +624,17 @@ const abi = [
     address indexed verifier,
     bytes32 indexed currency,
     uint256 conversionRate
-  )`
+  )`,
+  `event BeforeExecution()`,
+  `event UserOperationEvent(
+    bytes32 indexed userOpHash,
+    address indexed sender,
+    address indexed paymaster,
+    uint256 nonce,
+    bool success,
+    uint256 actualGasCost,
+    uint256 actualGasUsed
+)`
 ];
 
 const iface = new Interface(abi);
@@ -1231,6 +1241,27 @@ if (name === 'DepositClosed') {
   console.log(`🔒 DepositClosed: deposit ${id} by ${depositor} - ignored`);
   return;
 }
+
+if (name === 'BeforeExecution') {
+  console.log(`🛠️ BeforeExecution event detected at block ${log.blockNumber}`);
+  return;
+}
+
+if (name === 'UserOperationEvent') {
+  const { userOpHash, sender, paymaster, nonce, success, actualGasCost, actualGasUsed } = parsed.args;
+  console.log(`📡 UserOperationEvent:
+  • Hash: ${userOpHash}
+  • Sender: ${sender}
+  • Paymaster: ${paymaster}
+  • Nonce: ${nonce}
+  • Success: ${success}
+  • Gas Used: ${actualGasUsed}
+  • Gas Cost: ${actualGasCost}
+  • Block: ${log.blockNumber}`);
+  return;
+}
+
+    
 
 if (name === 'DepositCurrencyRateUpdated') {
   const { depositId, verifier, currency, conversionRate } = parsed.args;
