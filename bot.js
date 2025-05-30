@@ -1454,6 +1454,7 @@ bot.onText(/\/start/, (msg) => {
 - \`/sniper eur\` - Snipe EUR on ALL platforms
 - \`/sniper eur revolut\` - Snipe EUR only on Revolut
 - \`/sniper usd zelle\` - Snipe USD only on Zelle
+- \`/sniper threshold 0.5\` - Set your alert threshold to 0.5%
 - \`/sniper list\` - Show active sniper settings
 - \`/sniper clear\` - Clear all sniper settings
 - \`/unsnipe eur\` - Stop sniping EUR (all platforms)
@@ -1505,6 +1506,7 @@ bot.onText(/\/help/, (msg) => {
 - \`/sniper eur\` - Snipe EUR on ALL platforms
 - \`/sniper eur revolut\` - Snipe EUR only on Revolut
 - \`/sniper usd zelle\` - Snipe USD only on Zelle
+- \`/sniper threshold 0.5\` - Set your alert threshold to 0.5%
 - \`/sniper list\` - Show active sniper settings
 - \`/sniper clear\` - Clear all sniper settings
 - \`/unsnipe eur\` - Stop sniping EUR (all platforms)
