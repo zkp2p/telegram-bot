@@ -891,23 +891,138 @@ const abi = [
     bool success,
     uint256 actualGasCost,
     uint256 actualGasUsed
+)`,
+`event DepositConversionRateUpdated(
+  uint256 indexed depositId,
+  address indexed verifier,
+  bytes32 indexed currency,
+  uint256 newConversionRate
 )`
 ];
 
 const iface = new Interface(abi);
-const pendingPrunedEvents = new Map();
-const recentlyFulfilled = new Map(); // intentHash → timestamp
-const FULFILLED_TTL = 10000; // 10 sec window to suppress prune
+const pendingTransactions = new Map(); // txHash -> {fulfilled: Set, pruned: Set, blockNumber: number, rawIntents: Map}
+const processingScheduled = new Set(); // Track which transactions are scheduled for processing
 
-// Clean up expired fulfilled entries
-setInterval(() => {
-  const now = Date.now();
-  for (const [hash, ts] of recentlyFulfilled.entries()) {
-    if (now - ts > FULFILLED_TTL) {
-      recentlyFulfilled.delete(hash);
+function scheduleTransactionProcessing(txHash) {
+  if (processingScheduled.has(txHash)) return; // Already scheduled
+  
+  processingScheduled.add(txHash);
+  
+  setTimeout(async () => {
+    await processCompletedTransaction(txHash);
+    processingScheduled.delete(txHash);
+  }, 3000); // Wait 3 seconds for all events to arrive
+}
+
+async function processCompletedTransaction(txHash) {
+  const txData = pendingTransactions.get(txHash);
+  if (!txData) return;
+  
+  console.log(`🔄 Processing completed transaction ${txHash}`);
+  
+  // Process pruned intents first, but skip if also fulfilled
+  for (const intentHash of txData.pruned) {
+    if (txData.fulfilled.has(intentHash)) {
+      console.log(`Intent ${intentHash} was both pruned and fulfilled in tx ${txHash}, prioritizing fulfilled status`);
+      continue; // Skip sending pruned notification
+    }
+    
+    // Send pruned notification
+    const rawIntent = txData.rawIntents.get(intentHash);
+    if (rawIntent) {
+      await sendPrunedNotification(rawIntent, txHash);
     }
   }
-}, 5000);
+  
+  // Process fulfilled intents
+  for (const intentHash of txData.fulfilled) {
+    const rawIntent = txData.rawIntents.get(intentHash);
+    if (rawIntent) {
+      await sendFulfilledNotification(rawIntent, txHash);
+    }
+  }
+  
+  // Clean up
+  pendingTransactions.delete(txHash);
+}
+
+async function sendFulfilledNotification(rawIntent, txHash) {
+  const { depositId, verifier, owner, to, amount, sustainabilityFee, verifierFee, intentHash } = rawIntent;
+  const platformName = getPlatformName(verifier);
+  
+  const interestedUsers = await db.getUsersInterestedInDeposit(depositId);
+  if (interestedUsers.length === 0) return;
+  
+  console.log(`📤 Sending fulfillment to ${interestedUsers.length} users interested in deposit ${depositId}`);
+  
+  const message = `
+🟢 *Order Fulfilled*
+- *Deposit ID:* \`${depositId}\`
+- *Order ID:* \`${intentHash}\`
+- *Platform:* ${platformName}
+- *Owner:* \`${owner}\`
+- *To:* \`${to}\`
+- *Amount:* ${formatUSDC(amount)} USDC
+- *Sustainability Fee:* ${formatUSDC(sustainabilityFee)} USDC
+- *Verifier Fee:* ${formatUSDC(verifierFee)} USDC
+- *Tx:* [View on BaseScan](${txLink(txHash)})
+`.trim();
+
+  for (const chatId of interestedUsers) {
+    await db.updateDepositStatus(chatId, depositId, 'fulfilled', intentHash);
+    await db.logEventNotification(chatId, depositId, 'fulfilled');
+    
+    const sendOptions = { 
+      parse_mode: 'Markdown', 
+      disable_web_page_preview: true,
+      reply_markup: createDepositKeyboard(depositId)
+    };
+    if (chatId === ZKP2P_GROUP_ID) {
+      sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
+    }
+    bot.sendMessage(chatId, message, sendOptions);
+  }
+}
+
+async function sendPrunedNotification(rawIntent, txHash) {
+  const { depositId, intentHash } = rawIntent;
+  
+  const interestedUsers = await db.getUsersInterestedInDeposit(depositId);
+  if (interestedUsers.length === 0) return;
+  
+  console.log(`📤 Sending cancellation to ${interestedUsers.length} users interested in deposit ${depositId}`);
+  
+  const message = `
+🟠 *Order Cancelled*
+- *Deposit ID:* \`${depositId}\`
+- *Order ID:* \`${intentHash}\`
+- *Tx:* [View on BaseScan](${txLink(txHash)})
+
+*Order was cancelled*
+`.trim();
+
+  for (const chatId of interestedUsers) {
+    await db.updateDepositStatus(chatId, depositId, 'pruned', intentHash);
+    await db.logEventNotification(chatId, depositId, 'pruned');
+    
+    const sendOptions = { 
+      parse_mode: 'Markdown', 
+      disable_web_page_preview: true,
+      reply_markup: createDepositKeyboard(depositId)
+    };
+    if (chatId === ZKP2P_GROUP_ID) {
+      sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
+    }
+    bot.sendMessage(chatId, message, sendOptions);
+  }
+}
+
+
+
+
+
+
 
 // Verifier address to platform mapping
 const verifierMapping = {
@@ -1419,118 +1534,70 @@ const handleContractEvent = async (log) => {
       }
     }
 
-    if (name === 'IntentFulfilled') {
-      const { intentHash, depositId, verifier, owner, to, amount, sustainabilityFee, verifierFee } = parsed.args;
-      recentlyFulfilled.set(intentHash.toLowerCase(), Date.now());
-      const id = Number(depositId);
-      const txHash = log.transactionHash;
-      const platformName = getPlatformName(verifier);
-      
-      console.log('🧪 IntentFulfilled depositId:', id);
-
-      const interestedUsers = await db.getUsersInterestedInDeposit(id);
-      if (interestedUsers.length === 0) {
-        console.log('🚫 Ignored — no users interested in this depositId.');
-        return;
-      }
-
-      if (pendingPrunedEvents.has(txHash)) {
-        console.log('🔄 Cancelling IntentPruned notification - order was fulfilled');
-        pendingPrunedEvents.delete(txHash);
-      }
-
-      console.log(`📤 Sending fulfillment to ${interestedUsers.length} users interested in deposit ${id}`);
-
-      const message = `
-🟢 *Order Fulfilled*
-• *Deposit ID:* \`${id}\`
-• *Order ID:* \`${intentHash}\`
-• *Platform:* ${platformName}
-• *Owner:* \`${owner}\`
-• *To:* \`${to}\`
-• *Amount:* ${formatUSDC(amount)} USDC
-• *Sustainability Fee:* ${formatUSDC(sustainabilityFee)} USDC
-• *Verifier Fee:* ${formatUSDC(verifierFee)} USDC
-• *Block:* ${log.blockNumber}
-• *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
-`.trim();
-
-      for (const chatId of interestedUsers) {
-        await db.updateDepositStatus(chatId, id, 'fulfilled', intentHash);
-        await db.logEventNotification(chatId, id, 'fulfilled');
-        
-        const sendOptions = { 
-          parse_mode: 'Markdown', 
-          disable_web_page_preview: true,
-          reply_markup: createDepositKeyboard(id)
-        };
-        if (chatId === ZKP2P_GROUP_ID) {
-          sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
-        }
-        bot.sendMessage(chatId, message, sendOptions);
-      }
-    }
+if (name === 'IntentFulfilled') {
+  const { intentHash, depositId, verifier, owner, to, amount, sustainabilityFee, verifierFee } = parsed.args;
+  const txHash = log.transactionHash;
+  const id = Number(depositId);
+  
+  console.log('🧪 IntentFulfilled collected for batching - depositId:', id);
+  
+  // Initialize transaction data if not exists
+  if (!pendingTransactions.has(txHash)) {
+    pendingTransactions.set(txHash, {
+      fulfilled: new Set(),
+      pruned: new Set(),
+      blockNumber: log.blockNumber,
+      rawIntents: new Map()
+    });
+  }
+  
+  // Store the fulfillment data
+  const txData = pendingTransactions.get(txHash);
+  txData.fulfilled.add(intentHash.toLowerCase());
+  txData.rawIntents.set(intentHash.toLowerCase(), {
+    type: 'fulfilled',
+    depositId: id,
+    verifier,
+    owner,
+    to,
+    amount,
+    sustainabilityFee,
+    verifierFee,
+    intentHash
+  });
+  
+  // Schedule processing this transaction
+  scheduleTransactionProcessing(txHash);
+}
 
 if (name === 'IntentPruned') {
   const { intentHash, depositId } = parsed.args;
-  const id = Number(depositId);
-  console.log('🧪 IntentPruned depositId:', id);
-
-  const interestedUsers = await db.getUsersInterestedInDeposit(id);
-  if (interestedUsers.length === 0) {
-    console.log('🚫 Ignored — no users interested in this depositId.');
-    return;
-  }
-
   const txHash = log.transactionHash;
-  pendingPrunedEvents.set(txHash, {
-    intentHash,
-    depositId: id,
-    blockNumber: log.blockNumber,
-    txHash,
-    interestedUsers
-  });
-
-  // Increased delay to 5 seconds to check for fulfillment
-  setTimeout(async () => {
-    const prunedEvent = pendingPrunedEvents.get(txHash);
-  if (prunedEvent) {
-    const wasFulfilled = recentlyFulfilled.has(prunedEvent.intentHash.toLowerCase());
-  if (wasFulfilled) {
-    console.log(`🛑 Skipping pruned message for ${prunedEvent.intentHash} — already fulfilled`);
-    pendingPrunedEvents.delete(txHash);
-    return;
+  const id = Number(depositId);
+  
+  console.log('🧪 IntentPruned collected for batching - depositId:', id);
+  
+  // Initialize transaction data if not exists
+  if (!pendingTransactions.has(txHash)) {
+    pendingTransactions.set(txHash, {
+      fulfilled: new Set(),
+      pruned: new Set(),
+      blockNumber: log.blockNumber,
+      rawIntents: new Map()
+    });
   }
-      console.log(`📤 Sending cancellation to ${prunedEvent.interestedUsers.length} users interested in deposit ${id}`);
-      
-      const message = `
-🟠 *Order Cancelled*
-- *Deposit ID:* \`${id}\`
-- *Order ID:* \`${intentHash}\`
-- *Block:* ${prunedEvent.blockNumber}
-- *Tx:* [View on BaseScan](${txLink(prunedEvent.txHash)})
-
-*Order was cancelled*
-`.trim();
-
-      for (const chatId of prunedEvent.interestedUsers) {
-        await db.updateDepositStatus(chatId, id, 'pruned', intentHash);
-        await db.logEventNotification(chatId, id, 'pruned');
-        
-        const sendOptions = { 
-          parse_mode: 'Markdown', 
-          disable_web_page_preview: true,
-          reply_markup: createDepositKeyboard(id)
-        };
-        if (chatId === ZKP2P_GROUP_ID) {
-          sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
-        }
-        bot.sendMessage(chatId, message, sendOptions);
-      }
-      
-      pendingPrunedEvents.delete(txHash);
-    }
-  }, 5000); // Changed from 2000 to 5000ms
+  
+  // Store the pruned data
+  const txData = pendingTransactions.get(txHash);
+  txData.pruned.add(intentHash.toLowerCase());
+  txData.rawIntents.set(intentHash.toLowerCase(), {
+    type: 'pruned',
+    depositId: id,
+    intentHash
+  });
+  
+  // Schedule processing this transaction
+  scheduleTransactionProcessing(txHash);
 }
 
 if (name === 'DepositWithdrawn') {
@@ -1580,6 +1647,18 @@ if (name === 'DepositCurrencyRateUpdated') {
   console.log(`📶 DepositCurrencyRateUpdated - ID: ${id}, ${platform}, ${fiatCode} rate updated to ${rate}`);
   return;
 }
+
+if (name === 'DepositConversionRateUpdated') {
+  const { depositId, verifier, currency, newConversionRate } = parsed.args;
+  const id = Number(depositId);
+  const fiatCode = getFiatCode(currency);
+  const rate = (Number(newConversionRate) / 1e18).toFixed(6);
+  const platform = getPlatformName(verifier);
+
+  console.log(`📶 DepositConversionRateUpdated - ID: ${id}, ${platform}, ${fiatCode} rate updated to ${rate} - ignored`);
+  return; // Don't trigger sniper alerts for rate updates
+}
+    
     
 if (name === 'DepositReceived') {
   const { depositId, depositor, token, amount, intentAmountRange } = parsed.args;
