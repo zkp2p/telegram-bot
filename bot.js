@@ -1400,6 +1400,42 @@ bot.onText(/\/unsnipe (.+)/, async (msg, match) => {
   bot.sendMessage(chatId, `🎯 Stopped sniping ${currency}${platformText}.`, { parse_mode: 'Markdown' });
 });
 
+// Handle /start command - show help
+bot.onText(/\/start/, (msg) => {
+  const chatId = msg.chat.id;
+  const helpMessage = `
+🤖 *ZKP2P Tracker Commands:*
+
+**Deposit Tracking:**
+- \`/deposit all\` - Listen to ALL deposits (every event)
+- \`/deposit stop\` - Stop listening to all deposits
+- \`/deposit 123\` - Track a specific deposit
+- \`/deposit 123,456,789\` - Track multiple deposits
+- \`/remove 123\` - Stop tracking specific deposit(s)
+
+**Sniper (Arbitrage Alerts):**
+- \`/sniper eur\` - Snipe EUR on ALL platforms
+- \`/sniper eur revolut\` - Snipe EUR only on Revolut
+- \`/sniper usd zelle\` - Snipe USD only on Zelle
+- \`/sniper list\` - Show active sniper settings
+- \`/sniper clear\` - Clear all sniper settings
+- \`/unsnipe eur\` - Stop sniping EUR (all platforms)
+- \`/unsnipe eur wise\` - Stop sniping EUR on Wise only
+
+**General:**
+- \`/list\` - Show all tracking status (deposits + snipers)
+- \`/clearall\` - Stop all tracking and clear everything
+- \`/status\` - Check WebSocket connection and settings
+- \`/help\` - Show this help message
+
+*Note: Each user has their own settings. Sniper alerts you when deposits offer better exchange rates than market!*
+`.trim();
+  
+  bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
+});
+
+
+
 bot.onText(/\/help/, (msg) => {
   const chatId = msg.chat.id;
   const helpMessage = `
