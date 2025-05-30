@@ -15,7 +15,7 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 const EXCHANGE_API_URL = `https://v6.exchangerate-api.com/v6/${process.env.EXCHANGE_API_KEY}/latest/USD`;
 
 const depositAmounts = new Map(); // Store deposit amounts temporarily
-
+const intentDetails = new Map();
 
 // Database helper functions
 class DatabaseManager {
@@ -981,6 +981,17 @@ async function processCompletedTransaction(txHash) {
 async function sendFulfilledNotification(rawIntent, txHash) {
   const { depositId, verifier, owner, to, amount, sustainabilityFee, verifierFee, intentHash } = rawIntent;
   const platformName = getPlatformName(verifier);
+
+  const storedDetails = intentDetails.get(intentHash.toLowerCase());
+  let rateText = '';
+  if (storedDetails) {
+    const fiatCode = getFiatCode(storedDetails.fiatCurrency);
+    const formattedRate = formatConversionRate(storedDetails.conversionRate, fiatCode);
+    rateText = `\n- *Rate:* ${formattedRate}`;
+  
+  // Clean up memory after use
+  intentDetails.delete(intentHash.toLowerCase());
+  }
   
   const interestedUsers = await db.getUsersInterestedInDeposit(depositId);
   if (interestedUsers.length === 0) return;
@@ -994,7 +1005,7 @@ async function sendFulfilledNotification(rawIntent, txHash) {
 - *Platform:* ${platformName}
 - *Owner:* \`${owner}\`
 - *To:* \`${to}\`
-- *Amount:* ${formatUSDC(amount)} USDC
+- *Amount:* ${formatUSDC(amount)} USDC${rateText}
 - *Sustainability Fee:* ${formatUSDC(sustainabilityFee)} USDC
 - *Verifier Fee:* ${formatUSDC(verifierFee)} USDC
 - *Tx:* [View on BaseScan](${txLink(txHash)})
@@ -1588,7 +1599,9 @@ const handleContractEvent = async (log) => {
       const formattedRate = formatConversionRate(conversionRate, fiatCode);
       
       console.log('🧪 IntentSignaled depositId:', id);
-
+      
+      intentDetails.set(intentHash.toLowerCase(), { fiatCurrency, conversionRate, verifier });
+      
       const interestedUsers = await db.getUsersInterestedInDeposit(id);
       if (interestedUsers.length === 0) {
         console.log('🚫 Ignored — no users interested in this depositId.');
