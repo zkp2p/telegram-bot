@@ -423,6 +423,37 @@ async getUserSnipers(chatId) {
   
     return data?.amount || 0;
   }
+// Get user's global sniper threshold
+async getUserThreshold(chatId) {
+  const { data, error } = await supabase
+    .from('user_settings')
+    .select('threshold')
+    .eq('chat_id', chatId)
+    .eq('is_active', true)
+    .single();
+  
+  if (error && error.code !== 'PGRST116') {
+    console.error('Error getting user threshold:', error);
+  }
+  return data?.threshold || 0.2; // Default to 0.2% if not set
+}
+
+// Set user's global sniper threshold
+async setUserThreshold(chatId, threshold) {
+  const { error } = await supabase
+    .from('user_settings')
+    .upsert({ 
+      chat_id: chatId, 
+      threshold: threshold,
+      is_active: true,
+      updated_at: new Date().toISOString()
+    }, { 
+      onConflict: 'chat_id' 
+    });
+  
+  if (error) console.error('Error setting user threshold:', error);
+}
+  
 }
 
 
@@ -1120,13 +1151,17 @@ async function checkSniperOpportunity(depositId, depositAmount, currencyHash, co
   console.log(`📊 Deposit rate: ${depositRate} ${currencyCode}/USD`);
   console.log(`📊 Percentage difference: ${percentageDiff.toFixed(2)}%`);
   
-  // Only alert if deposit offers better rate (lower rate = better for buyer)
-  // Minimum .2% threshold
-  if (percentageDiff >= 0.2) {
-    const interestedUsers = await db.getUsersWithSniper(currencyCode, platformName);
+// Get users with their custom thresholds and check each one individually
+const interestedUsers = await db.getUsersWithSniper(currencyCode, platformName);
+
+if (interestedUsers.length > 0) {
+  console.log(`🎯 Checking thresholds for ${interestedUsers.length} potential users`);
+  
+  for (const chatId of interestedUsers) {
+    const userThreshold = await db.getUserThreshold(chatId);
     
-    if (interestedUsers.length > 0) {
-      console.log(`🎯 SNIPER OPPORTUNITY! Alerting ${interestedUsers.length} users`);
+    if (percentageDiff >= userThreshold) {
+      console.log(`🎯 SNIPER OPPORTUNITY for user ${chatId}! ${percentageDiff.toFixed(2)}% >= ${userThreshold}%`);
       
       const formattedAmount = (Number(depositAmount) / 1e6).toFixed(2);
       const message = `
@@ -1140,26 +1175,28 @@ async function checkSniperOpportunity(depositId, depositAmount, currencyHash, co
 *You get ${currencyCode} at ${percentageDiff.toFixed(1)}% discount on ${platformName}!*
 `.trim();
 
-      for (const chatId of interestedUsers) {
-        await db.logSniperAlert(chatId, depositId, currencyCode, depositRate, marketRate, percentageDiff);
-        
-        bot.sendMessage(chatId, message, { 
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [[
-              {
-                text: `🔗 Snipe Deposit ${depositId}`,
-                url: depositLink(depositId)
-              }
-            ]]
-          }
-        });
-      }
+      await db.logSniperAlert(chatId, depositId, currencyCode, depositRate, marketRate, percentageDiff);
+      
+      bot.sendMessage(chatId, message, { 
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [[
+            {
+              text: `🔗 Snipe Deposit ${depositId}`,
+              url: depositLink(depositId)
+            }
+          ]]
+        }
+      });
+    } else {
+      console.log(`📊 No opportunity for user ${chatId}: ${percentageDiff.toFixed(2)}% < ${userThreshold}%`);
     }
-  } else {
-    console.log(`📊 No opportunity: ${percentageDiff.toFixed(2)}% (threshold: 1%)`);
   }
+} else {
+  console.log(`📊 No users interested in sniping ${currencyCode} on ${platformName}`);
 }
+}
+  
 
 // Telegram commands - now using database
 bot.onText(/\/deposit (.+)/, async (msg, match) => {
@@ -1434,7 +1471,23 @@ bot.onText(/\/start/, (msg) => {
   bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
 
-
+bot.onText(/\/sniper threshold (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const input = match[1].trim();
+  
+  await db.initUser(chatId, msg.from.username, msg.from.first_name, msg.from.last_name);
+  
+  const threshold = parseFloat(input);
+  
+  if (isNaN(threshold)) {
+    bot.sendMessage(chatId, `❌ Invalid threshold. Please provide a number (e.g., 0.5 for 0.5%)`, { parse_mode: 'Markdown' });
+    return;
+  }
+  
+  await db.setUserThreshold(chatId, threshold);
+  
+  bot.sendMessage(chatId, `🎯 *Sniper threshold set to ${threshold}%*\n\nYou'll now be alerted when deposits offer rates ${threshold}% or better than market rates.`, { parse_mode: 'Markdown' });
+});
 
 bot.onText(/\/help/, (msg) => {
   const chatId = msg.chat.id;
@@ -1672,7 +1725,6 @@ if (name === 'UserOperationEvent') {
 }
 
     
-
 if (name === 'DepositCurrencyRateUpdated') {
   const { depositId, verifier, currency, conversionRate } = parsed.args;
   const id = Number(depositId);
@@ -1681,7 +1733,13 @@ if (name === 'DepositCurrencyRateUpdated') {
   const platform = getPlatformName(verifier);
 
   console.log(`📶 DepositCurrencyRateUpdated - ID: ${id}, ${platform}, ${fiatCode} rate updated to ${rate}`);
-  return;
+  
+  // Check for sniper opportunity with updated rate
+  const depositAmount = await db.getDepositAmount(id);
+  if (depositAmount > 0) {
+    console.log(`🎯 Rechecking sniper opportunity due to rate update for deposit ${id}`);
+    await checkSniperOpportunity(id, depositAmount, currency, conversionRate, verifier);
+  }
 }
 
 if (name === 'DepositConversionRateUpdated') {
@@ -1691,8 +1749,14 @@ if (name === 'DepositConversionRateUpdated') {
   const rate = (Number(newConversionRate) / 1e18).toFixed(6);
   const platform = getPlatformName(verifier);
 
-  console.log(`📶 DepositConversionRateUpdated - ID: ${id}, ${platform}, ${fiatCode} rate updated to ${rate} - ignored`);
-  return; // Don't trigger sniper alerts for rate updates
+  console.log(`📶 DepositConversionRateUpdated - ID: ${id}, ${platform}, ${fiatCode} rate updated to ${rate}`);
+  
+  // Check for sniper opportunity with updated rate
+  const depositAmount = await db.getDepositAmount(id);
+  if (depositAmount > 0) {
+    console.log(`🎯 Rechecking sniper opportunity due to conversion rate update for deposit ${id}`);
+    await checkSniperOpportunity(id, depositAmount, currency, newConversionRate, verifier);
+  }
 }
     
     
