@@ -1370,6 +1370,26 @@ bot.onText(/\/status/, async (msg) => {
 });
 
 // Sniper commands
+
+bot.onText(/\/sniper threshold (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const input = match[1].trim();
+  
+  await db.initUser(chatId, msg.from.username, msg.from.first_name, msg.from.last_name);
+  
+  const threshold = parseFloat(input);
+  
+  if (isNaN(threshold)) {
+    bot.sendMessage(chatId, `❌ Invalid threshold. Please provide a number (e.g., 0.5 for 0.5%)`, { parse_mode: 'Markdown' });
+    return;
+  }
+  
+  await db.setUserThreshold(chatId, threshold);
+  
+  bot.sendMessage(chatId, `🎯 *Sniper threshold set to ${threshold}%*\n\nYou'll now be alerted when deposits offer rates ${threshold}% or better than market rates.`, { parse_mode: 'Markdown' });
+});
+
+
 bot.onText(/\/sniper (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const input = match[1].trim().toLowerCase();
@@ -1472,23 +1492,6 @@ bot.onText(/\/start/, (msg) => {
   bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
 
-bot.onText(/\/sniper threshold (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const input = match[1].trim();
-  
-  await db.initUser(chatId, msg.from.username, msg.from.first_name, msg.from.last_name);
-  
-  const threshold = parseFloat(input);
-  
-  if (isNaN(threshold)) {
-    bot.sendMessage(chatId, `❌ Invalid threshold. Please provide a number (e.g., 0.5 for 0.5%)`, { parse_mode: 'Markdown' });
-    return;
-  }
-  
-  await db.setUserThreshold(chatId, threshold);
-  
-  bot.sendMessage(chatId, `🎯 *Sniper threshold set to ${threshold}%*\n\nYou'll now be alerted when deposits offer rates ${threshold}% or better than market rates.`, { parse_mode: 'Markdown' });
-});
 
 bot.onText(/\/help/, (msg) => {
   const chatId = msg.chat.id;
