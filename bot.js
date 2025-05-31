@@ -461,6 +461,7 @@ const db = new DatabaseManager();
 
 const ZKP2P_GROUP_ID = -1001928949520;
 const ZKP2P_TOPIC_ID = 5385;
+const ZKP2P_SNIPER_TOPIC_ID = 5671;
 
 const initializeBot = async () => {
   try {
@@ -493,6 +494,7 @@ const initializeBot = async () => {
     
     console.log('📝 Setting listen all to true...');
     await db.setUserListenAll(ZKP2P_GROUP_ID, true);
+    await db.setUserThreshold(ZKP2P_GROUP_ID, 0.1);
 
     console.log(`📤 Attempting to send message to topic ${ZKP2P_TOPIC_ID} in group ${ZKP2P_GROUP_ID}`);
     
@@ -1165,6 +1167,10 @@ async function checkSniperOpportunity(depositId, depositAmount, currencyHash, co
 // Get users with their custom thresholds and check each one individually
 const interestedUsers = await db.getUsersWithSniper(currencyCode, platformName);
 
+if (!interestedUsers.includes(ZKP2P_GROUP_ID)) {
+  interestedUsers.push(ZKP2P_GROUP_ID);
+}
+
 if (interestedUsers.length > 0) {
   console.log(`🎯 Checking thresholds for ${interestedUsers.length} potential users`);
   
@@ -1188,17 +1194,24 @@ if (interestedUsers.length > 0) {
 
       await db.logSniperAlert(chatId, depositId, currencyCode, depositRate, marketRate, percentageDiff);
       
-      bot.sendMessage(chatId, message, { 
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [[
-            {
-              text: `🔗 Snipe Deposit ${depositId}`,
-              url: depositLink(depositId)
-            }
-          ]]
-        }
-      });
+const sendOptions = { 
+  parse_mode: 'Markdown',
+  reply_markup: {
+    inline_keyboard: [[
+      {
+        text: `🔗 Snipe Deposit ${depositId}`,
+        url: depositLink(depositId)
+      }
+    ]]
+  }
+};
+
+// Send sniper messages to the sniper topic
+if (chatId === ZKP2P_GROUP_ID) {
+  sendOptions.message_thread_id = ZKP2P_SNIPER_TOPIC_ID;
+}
+
+bot.sendMessage(chatId, message, sendOptions);
     } else {
       console.log(`📊 No opportunity for user ${chatId}: ${percentageDiff.toFixed(2)}% < ${userThreshold}%`);
     }
