@@ -1401,7 +1401,7 @@ bot.onText(/\/sniper threshold (.+)/, async (msg, match) => {
 });
 
 
-bot.onText(/\/sniper (.+)/, async (msg, match) => {
+bot.onText(/\/sniper (?!threshold)(.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const input = match[1].trim().toLowerCase();
   
