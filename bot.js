@@ -1074,7 +1074,6 @@ const verifierMapping = {
   '0x9a733b55a875d0db4915c6b36350b24f8ab99df5': { platform: 'venmo', isUsdOnly: true },
   '0xaa5a1b62b01781e789c900d616300717cd9a41ab': { platform: 'revolut', isUsdOnly: false },
   '0xff0149799631d7a5bde2e7ea9b306c42b3d9a9ca': { platform: 'wise', isUsdOnly: false },
-  '0x1783f040783c0827fb64d128ece548d9b3613ad5': { platform: 'zelle', isUsdOnly: true },
   '0xf2AC5be14F32Cbe6A613CFF8931d95460D6c33A3': { platform: 'mercado pago', isUsdOnly: true },
   '0x431a078A5029146aAB239c768A615CD484519aF7': { platform: 'zelle', isUsdOnly: true }
 
@@ -1191,6 +1190,11 @@ if (interestedUsers.length > 0) {
 💰 Deposit Rate: ${depositRate.toFixed(4)} ${currencyCode}/USD
 📈 Market Rate: ${marketRate.toFixed(4)} ${currencyCode}/USD  
 🔥 ${percentageDiff.toFixed(1)}% BETTER than market!
+
+💵 *If you filled this entire order:*
+- You'd pay: ${(Number(depositAmount) / 1e6 * depositRate).toFixed(2)} ${currencyCode}
+- Market cost: ${(Number(depositAmount) / 1e6 * marketRate).toFixed(2)} ${currencyCode}
+- **You save: ${((Number(depositAmount) / 1e6) * (marketRate - depositRate)).toFixed(2)} ${currencyCode}**
 
 *You get ${currencyCode} at ${percentageDiff.toFixed(1)}% discount on ${platformName}!*
 `.trim();
