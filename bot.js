@@ -453,15 +453,76 @@ async setUserThreshold(chatId, threshold) {
   
   if (error) console.error('Error setting user threshold:', error);
 }
+
+
+// add new samba contract to DB 
+async addSambaContract(contractAddress, contractName = null) {
+  const { error } = await supabase
+    .from('samba_contracts')
+    .upsert({ 
+      contract_address: contractAddress.toLowerCase(),
+      contract_name: contractName || 'Unknown Contract',
+      is_active: true,
+      created_at: new Date().toISOString()
+    }, { 
+      onConflict: 'contract_address' 
+    });
+  
+  if (error) console.error('Error adding samba contract:', error);
+  return !error;
+}
+
+async removeSambaContract(contractAddress) {
+  const { error } = await supabase
+    .from('samba_contracts')
+    .update({ 
+      is_active: false,
+      updated_at: new Date().toISOString()
+    })
+    .eq('contract_address', contractAddress.toLowerCase());
+  
+  if (error) console.error('Error removing samba contract:', error);
+  return !error;
+}
+
+async getSambaContracts() {
+  const { data, error } = await supabase
+    .from('samba_contracts')
+    .select('contract_address, contract_name, created_at')
+    .eq('is_active', true)
+    .order('created_at', { ascending: false });
+  
+  if (error) {
+    console.error('Error fetching samba contracts:', error);
+    return [];
+  }
+  
+  return data || [];
+}
+
+async isSambaContract(contractAddress) {
+  const { data, error } = await supabase
+    .from('samba_contracts')
+    .select('contract_address')
+    .eq('contract_address', contractAddress.toLowerCase())
+    .eq('is_active', true)
+    .single();
+  
+  if (error && error.code !== 'PGRST116') {
+    console.error('Error checking samba contract:', error);
+  }
+  return !!data;
+}
+
   
 }
 
 
 const db = new DatabaseManager();
 
-const ZKP2P_GROUP_ID = -1001928949520;
-const ZKP2P_TOPIC_ID = 5385;
-const ZKP2P_SNIPER_TOPIC_ID = 5671;
+const ZKP2P_GROUP_ID = 1310278446;
+const ZKP2P_TOPIC_ID = null;
+const ZKP2P_SNIPER_TOPIC_ID = null;
 
 const initializeBot = async () => {
   try {
@@ -501,7 +562,7 @@ const initializeBot = async () => {
     // Test message sending with better error handling
     const result = await bot.sendMessage(ZKP2P_GROUP_ID, '🔄 Bot restarted and ready!', {
       parse_mode: 'Markdown',
-      message_thread_id: ZKP2P_TOPIC_ID,
+      //message_thread_id: ZKP2P_TOPIC_ID,
     });
 
     console.log('✅ Initialization message sent successfully!');
@@ -1576,6 +1637,7 @@ const handleContractEvent = async (log) => {
       if (log.topics.length >= 3) {
         const topicDepositId = parseInt(log.topics[2], 16);
         console.log('📊 Extracted deposit ID from topic:', topicDepositId);
+    
         
         const interestedUsers = await db.getUsersInterestedInDeposit(topicDepositId);
         if (interestedUsers.length > 0) {
@@ -1807,6 +1869,46 @@ if (name === 'DepositReceived') {
   
   // Store the deposit amount for later sniper use
   await db.storeDepositAmount(id, usdcAmount);
+
+  // Check if this deposit is from a samba contract
+  const isSambaContract = await db.isSambaContract(depositor);
+  if (!isSambaContract) {
+    console.log(`🚫 Deposit ${id} not from samba contract ${depositor} - ignoring`);
+    return;
+  }
+
+  console.log(`✅ Deposit ${id} is from samba contract ${depositor} - processing`);
+  
+  // Send notification for new deposits from samba contracts
+  const interestedUsers = await db.getUsersInterestedInDeposit(id);
+  if (interestedUsers.length > 0) {
+    console.log(`📢 Sending new deposit notification to ${interestedUsers.length} users for samba deposit ${id}`);
+    
+    const message = `
+�� *New Samba Deposit Created*
+• *Deposit ID:* \`${id}\`
+• *Contract:* \`${depositor}\`
+• *Amount:* ${formatUSDC(amount)} USDC
+• *Token:* ${token}
+• *Intent Range:* ${intentAmountRange}
+• *Block:* ${log.blockNumber}
+• *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
+`.trim();
+
+    for (const chatId of interestedUsers) {
+      const sendOptions = { 
+        parse_mode: 'Markdown', 
+        disable_web_page_preview: true,
+        reply_markup: createDepositKeyboard(id)
+      };
+      if (chatId === ZKP2P_GROUP_ID) {
+        sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
+      }
+      bot.sendMessage(chatId, message, sendOptions);
+    }
+  } else {
+    console.log(`🚫 No users interested in deposit ${id} - no notification sent`);
+  }
 }
 
     // NEW: Handle DepositCurrencyAdded for sniper functionality
