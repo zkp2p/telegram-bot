@@ -1,11 +1,11 @@
 require('dotenv').config();
-const { WebSocketProvider, Interface } = require('ethers');
+const { WebSocketProvider, Interface, verifyMessage } = require('ethers');
 const TelegramBot = require('node-telegram-bot-api');
 const { createClient } = require('@supabase/supabase-js');
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
-const EC = require('elliptic').ec; 
+const EC = require('elliptic').ec;
 
 
 // Supabase setup
@@ -28,17 +28,17 @@ class DatabaseManager {
   async initUser(chatId, username = null, firstName = null, lastName = null) {
     const { data, error } = await supabase
       .from('users')
-      .upsert({ 
+      .upsert({
         chat_id: chatId,
         username: username,
         first_name: firstName,
         last_name: lastName,
-        last_active: new Date().toISOString() 
-      }, { 
+        last_active: new Date().toISOString()
+      }, {
         onConflict: 'chat_id',
-        ignoreDuplicates: false 
+        ignoreDuplicates: false
       });
-    
+
     if (error) console.error('Error initializing user:', error);
     return data;
   }
@@ -50,12 +50,12 @@ class DatabaseManager {
       .select('deposit_id, status')
       .eq('chat_id', chatId)
       .eq('is_active', true); // Only get active deposits
-    
+
     if (error) {
       console.error('Error fetching user deposits:', error);
       return new Set();
     }
-    
+
     return new Set(data.map(row => row.deposit_id));
   }
 
@@ -66,12 +66,12 @@ class DatabaseManager {
       .select('deposit_id, status, intent_hash')
       .eq('chat_id', chatId)
       .eq('is_active', true); // Only get active deposits
-    
+
     if (error) {
       console.error('Error fetching user deposit states:', error);
       return new Map();
     }
-    
+
     const statesMap = new Map();
     data.forEach(row => {
       statesMap.set(row.deposit_id, {
@@ -79,7 +79,7 @@ class DatabaseManager {
         intentHash: row.intent_hash
       });
     });
-    
+
     return statesMap;
   }
 
@@ -87,16 +87,16 @@ class DatabaseManager {
   async addUserDeposit(chatId, depositId) {
     const { error } = await supabase
       .from('user_deposits')
-      .upsert({ 
-        chat_id: chatId, 
+      .upsert({
+        chat_id: chatId,
         deposit_id: depositId,
         status: 'tracking',
         is_active: true, // Explicitly set as active
         created_at: new Date().toISOString()
-      }, { 
-        onConflict: 'chat_id,deposit_id' 
+      }, {
+        onConflict: 'chat_id,deposit_id'
       });
-    
+
     if (error) console.error('Error adding deposit:', error);
   }
 
@@ -104,23 +104,23 @@ class DatabaseManager {
   async removeUserDeposit(chatId, depositId) {
     const { error } = await supabase
       .from('user_deposits')
-      .update({ 
+      .update({
         is_active: false,
         updated_at: new Date().toISOString()
       })
       .eq('chat_id', chatId)
       .eq('deposit_id', depositId);
-    
+
     if (error) console.error('Error removing deposit:', error);
   }
 
   // Update deposit status (only for active deposits)
   async updateDepositStatus(chatId, depositId, status, intentHash = null) {
-    const updateData = { 
+    const updateData = {
       status: status,
       updated_at: new Date().toISOString()
     };
-    
+
     if (intentHash) {
       updateData.intent_hash = intentHash;
     }
@@ -131,7 +131,7 @@ class DatabaseManager {
       .eq('chat_id', chatId)
       .eq('deposit_id', depositId)
       .eq('is_active', true); // Only update active deposits
-    
+
     if (error) console.error('Error updating deposit status:', error);
   }
 
@@ -143,7 +143,7 @@ class DatabaseManager {
       .eq('chat_id', chatId)
       .eq('is_active', true) // Only get active settings
       .single();
-    
+
     if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
       console.error('Error getting listen all:', error);
     }
@@ -153,35 +153,35 @@ class DatabaseManager {
   async setUserListenAll(chatId, listenAll) {
     const { error } = await supabase
       .from('user_settings')
-      .upsert({ 
-        chat_id: chatId, 
+      .upsert({
+        chat_id: chatId,
         listen_all: listenAll,
         is_active: true, // Always active when setting
         updated_at: new Date().toISOString()
-      }, { 
-        onConflict: 'chat_id' 
+      }, {
+        onConflict: 'chat_id'
       });
-    
+
     if (error) console.error('Error setting listen all:', error);
   }
 
   // Clear user data - mark as inactive (PRESERVES DATA FOR ANALYTICS)
   async clearUserData(chatId) {
     const timestamp = new Date().toISOString();
-    
+
     // Mark deposits as inactive instead of deleting
     const { error: error1 } = await supabase
       .from('user_deposits')
-      .update({ 
+      .update({
         is_active: false,
         updated_at: timestamp
       })
       .eq('chat_id', chatId);
-    
+
     // Mark settings as inactive instead of deleting  
     const { error: error2 } = await supabase
       .from('user_settings')
-      .update({ 
+      .update({
         is_active: false,
         updated_at: timestamp
       })
@@ -190,12 +190,12 @@ class DatabaseManager {
     // Clear sniper settings too
     const { error: error3 } = await supabase
       .from('user_snipers')
-      .update({ 
+      .update({
         is_active: false,
         updated_at: timestamp
       })
       .eq('chat_id', chatId);
-    
+
     if (error1) console.error('Error clearing user deposits:', error1);
     if (error2) console.error('Error clearing user settings:', error2);
     if (error3) console.error('Error clearing user snipers:', error3);
@@ -211,7 +211,7 @@ class DatabaseManager {
         event_type: eventType,
         sent_at: new Date().toISOString()
       });
-    
+
     if (error) console.error('Error logging notification:', error);
   }
 
@@ -223,19 +223,19 @@ class DatabaseManager {
       .select('chat_id')
       .eq('listen_all', true)
       .eq('is_active', true); // Only active "listen all" users
-    
+
     // Users tracking specific deposit (ACTIVE tracking only)
     const { data: specificTrackers } = await supabase
       .from('user_deposits')
       .select('chat_id')
       .eq('deposit_id', depositId)
       .eq('is_active', true); // Only active deposit tracking
-    
+
     const allUsers = new Set();
-    
+
     allListeners?.forEach(user => allUsers.add(user.chat_id));
     specificTrackers?.forEach(user => allUsers.add(user.chat_id));
-    
+
     return Array.from(allUsers);
   }
 
@@ -270,110 +270,110 @@ class DatabaseManager {
       popularDeposits: popularDeposits || []
     };
   }
-  
-async removeUserSniper(chatId, currency = null, platform = null) {
-  let query = supabase
-    .from('user_snipers')
-    .update({ 
-      is_active: false,
-      updated_at: new Date().toISOString()
-    })
-    .eq('chat_id', chatId);
-  
-  if (currency) {
-    query = query.eq('currency', currency.toUpperCase());
-  }
-  
-  if (platform) {
-    query = query.eq('platform', platform.toLowerCase());
-  }
-  
-  const { error } = await query;
-  if (error) console.error('Error removing sniper:', error);
-}
 
-async setUserSniper(chatId, currency, platform = null) {
-  // Always insert - no deactivation needed
-  const { error } = await supabase
-    .from('user_snipers')
-    .insert({
-      chat_id: chatId,
-      currency: currency.toUpperCase(),
-      platform: platform ? platform.toLowerCase() : null,
-      created_at: new Date().toISOString()
-    });
-  
-  if (error) {
-    console.error('Error setting sniper:', error);
-    return false;
-  }
-  return true;
-}
+  async removeUserSniper(chatId, currency = null, platform = null) {
+    let query = supabase
+      .from('user_snipers')
+      .update({
+        is_active: false,
+        updated_at: new Date().toISOString()
+      })
+      .eq('chat_id', chatId);
 
-async getUserSnipers(chatId) {
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  
-  const { data, error } = await supabase
-    .from('user_snipers')
-    .select('currency, platform, created_at')
-    .eq('chat_id', chatId)
-    .eq('is_active', true) 
-    .gte('created_at', thirtyDaysAgo.toISOString())
-    .order('created_at', { ascending: false });
-  
-  if (error) {
-    console.error('Error fetching user snipers:', error);
-    return [];
-  }
-  
-  // Deduplicate - keep only the newest entry for each currency+platform combo
-  const unique = new Map();
-  data.forEach(row => {
-    const key = `${row.currency}-${row.platform ?? 'all'}`; // ← Add fallback for null
-    const existing = unique.get(key);
-    if (!existing || new Date(row.created_at) > new Date(existing.created_at)) {
-      unique.set(key, row);
+    if (currency) {
+      query = query.eq('currency', currency.toUpperCase());
     }
-  });
 
-  return Array.from(unique.values());
-}
+    if (platform) {
+      query = query.eq('platform', platform.toLowerCase());
+    }
+
+    const { error } = await query;
+    if (error) console.error('Error removing sniper:', error);
+  }
+
+  async setUserSniper(chatId, currency, platform = null) {
+    // Always insert - no deactivation needed
+    const { error } = await supabase
+      .from('user_snipers')
+      .insert({
+        chat_id: chatId,
+        currency: currency.toUpperCase(),
+        platform: platform ? platform.toLowerCase() : null,
+        created_at: new Date().toISOString()
+      });
+
+    if (error) {
+      console.error('Error setting sniper:', error);
+      return false;
+    }
+    return true;
+  }
+
+  async getUserSnipers(chatId) {
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const { data, error } = await supabase
+      .from('user_snipers')
+      .select('currency, platform, created_at')
+      .eq('chat_id', chatId)
+      .eq('is_active', true)
+      .gte('created_at', thirtyDaysAgo.toISOString())
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching user snipers:', error);
+      return [];
+    }
+
+    // Deduplicate - keep only the newest entry for each currency+platform combo
+    const unique = new Map();
+    data.forEach(row => {
+      const key = `${row.currency}-${row.platform ?? 'all'}`; // ← Add fallback for null
+      const existing = unique.get(key);
+      if (!existing || new Date(row.created_at) > new Date(existing.created_at)) {
+        unique.set(key, row);
+      }
+    });
+
+    return Array.from(unique.values());
+  }
 
   async getUsersWithSniper(currency, platform = null) {
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  
-  let query = supabase
-    .from('user_snipers')
-    .select('chat_id, currency, platform, created_at')
-    .eq('currency', currency.toUpperCase())
-    .gte('created_at', thirtyDaysAgo.toISOString());
-  
-  // If platform is specified, match exactly OR get users with null platform (all platforms)
-  if (platform) {
-    // Get users who either specified this platform OR want all platforms (null)
-    query = query.or(`platform.eq.${platform.toLowerCase()},platform.is.null`);
-  }
-  
-  const { data, error } = await query;
-  
-  if (error) {
-    console.error('Error fetching users with sniper:', error);
-    return [];
-  }
-  
-  // Deduplicate by chat_id - if user has multiple entries, keep the newest
-  const userMap = new Map();
-  data.forEach(row => {
-    const existing = userMap.get(row.chat_id);
-    if (!existing || new Date(row.created_at) > new Date(existing.created_at)) {
-      userMap.set(row.chat_id, row);
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    let query = supabase
+      .from('user_snipers')
+      .select('chat_id, currency, platform, created_at')
+      .eq('currency', currency.toUpperCase())
+      .gte('created_at', thirtyDaysAgo.toISOString());
+
+    // If platform is specified, match exactly OR get users with null platform (all platforms)
+    if (platform) {
+      // Get users who either specified this platform OR want all platforms (null)
+      query = query.or(`platform.eq.${platform.toLowerCase()},platform.is.null`);
     }
-  });
-  
-  return Array.from(userMap.keys()); // Return just the chat IDs
-}
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('Error fetching users with sniper:', error);
+      return [];
+    }
+
+    // Deduplicate by chat_id - if user has multiple entries, keep the newest
+    const userMap = new Map();
+    data.forEach(row => {
+      const existing = userMap.get(row.chat_id);
+      if (!existing || new Date(row.created_at) > new Date(existing.created_at)) {
+        userMap.set(row.chat_id, row);
+      }
+    });
+
+    return Array.from(userMap.keys()); // Return just the chat IDs
+  }
 
   async logSniperAlert(chatId, depositId, currency, depositRate, marketRate, percentageDiff) {
     const { error } = await supabase
@@ -387,139 +387,142 @@ async getUserSnipers(chatId) {
         percentage_diff: percentageDiff,
         sent_at: new Date().toISOString()
       });
-    
+
     if (error) console.error('Error logging sniper alert:', error);
   }
 
   async storeDepositAmount(depositId, amount) {
-  // Store in memory for quick access
+    // Store in memory for quick access
     depositAmounts.set(Number(depositId), Number(amount));
-  
-  // Also store in database for persistence
-  const { error } = await supabase
-    .from('deposit_amounts')
-    .upsert({ 
-      deposit_id: Number(depositId),
-      amount: Number(amount),
-      created_at: new Date().toISOString()
-    }, { 
-      onConflict: 'deposit_id' 
-    });
-  
+
+    // Also store in database for persistence
+    const { error } = await supabase
+      .from('deposit_amounts')
+      .upsert({
+        deposit_id: Number(depositId),
+        amount: Number(amount),
+        created_at: new Date().toISOString()
+      }, {
+        onConflict: 'deposit_id'
+      });
+
     if (error) console.error('Error storing deposit amount:', error);
   }
 
   async getDepositAmount(depositId) {
-  // Try memory first
+    // Try memory first
     const memoryAmount = depositAmounts.get(Number(depositId));
     if (memoryAmount) return memoryAmount;
-  
-  // Fall back to database
+
+    // Fall back to database
     const { data, error } = await supabase
       .from('deposit_amounts')
       .select('amount')
       .eq('deposit_id', Number(depositId))
       .single();
-  
+
     if (error) {
       console.error('Error getting deposit amount:', error);
       return 0;
     }
-  
+
     return data?.amount || 0;
   }
-// Get user's global sniper threshold
-async getUserThreshold(chatId) {
-  const { data, error } = await supabase
-    .from('user_settings')
-    .select('threshold')
-    .eq('chat_id', chatId)
-    .eq('is_active', true)
-    .single();
-  
-  if (error && error.code !== 'PGRST116') {
-    console.error('Error getting user threshold:', error);
+  // Get user's global sniper threshold
+  async getUserThreshold(chatId) {
+    const { data, error } = await supabase
+      .from('user_settings')
+      .select('threshold')
+      .eq('chat_id', chatId)
+      .eq('is_active', true)
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      console.error('Error getting user threshold:', error);
+    }
+    return data?.threshold || 0.2; // Default to 0.2% if not set
   }
-  return data?.threshold || 0.2; // Default to 0.2% if not set
-}
 
-// Set user's global sniper threshold
-async setUserThreshold(chatId, threshold) {
-  const { error } = await supabase
-    .from('user_settings')
-    .upsert({ 
-      chat_id: chatId, 
-      threshold: threshold,
-      is_active: true,
-      updated_at: new Date().toISOString()
-    }, { 
-      onConflict: 'chat_id' 
-    });
-  
-  if (error) console.error('Error setting user threshold:', error);
-}
+  // Set user's global sniper threshold
+  async setUserThreshold(chatId, threshold) {
+    const { error } = await supabase
+      .from('user_settings')
+      .upsert({
+        chat_id: chatId,
+        threshold: threshold,
+        is_active: true,
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: 'chat_id'
+      });
 
-
-// add new samba contract to DB 
-async addSambaContract(contractAddress, contractName = null) {
-  const { error } = await supabase
-    .from('samba_contracts')
-    .upsert({ 
-      contract_address: contractAddress.toLowerCase(),
-      contract_name: contractName || 'Unknown Contract',
-      is_active: true,
-      created_at: new Date().toISOString()
-    }, { 
-      onConflict: 'contract_address' 
-    });
-  
-  if (error) console.error('Error adding samba contract:', error);
-  return !error;
-}
-
-async removeSambaContract(contractAddress) {
-  const { error } = await supabase
-    .from('samba_contracts')
-    .update({ 
-      is_active: false,
-      updated_at: new Date().toISOString()
-    })
-    .eq('contract_address', contractAddress.toLowerCase());
-  
-  if (error) console.error('Error removing samba contract:', error);
-  return !error;
-}
-
-async getSambaContracts() {
-  const { data, error } = await supabase
-    .from('samba_contracts')
-    .select('contract_address, contract_name, created_at')
-    .eq('is_active', true)
-    .order('created_at', { ascending: false });
-  
-  if (error) {
-    console.error('Error fetching samba contracts:', error);
-    return [];
+    if (error) console.error('Error setting user threshold:', error);
   }
-  
-  return data || [];
-}
 
-async isSambaContract(contractAddress) {
-  const { data, error } = await supabase
-    .from('samba_contracts')
-    .select('contract_address')
-    .eq('contract_address', contractAddress.toLowerCase())
-    .eq('is_active', true)
-    .single();
-  
-  if (error && error.code !== 'PGRST116') {
-    console.error('Error checking samba contract:', error);
+
+  // add new samba contract to DB 
+  async addSambaContract(
+    contractAddress,
+    user
+  ) {
+    const { error } = await supabase
+      .from('samba_contracts')
+      .upsert({
+        contract_address: contractAddress.toLowerCase(),
+        user,
+        is_active: true,
+        created_at: new Date().toISOString()
+      }, {
+        onConflict: 'contract_address'
+      });
+
+    if (error) console.error('Error adding samba contract:', error);
+    return !error;
   }
-  return !!data;
-}
 
-  
+  async removeSambaContract(contractAddress) {
+    const { error } = await supabase
+      .from('samba_contracts')
+      .update({
+        is_active: false,
+        updated_at: new Date().toISOString()
+      })
+      .eq('contract_address', contractAddress.toLowerCase());
+
+    if (error) console.error('Error removing samba contract:', error);
+    return !error;
+  }
+
+  async getSambaContracts() {
+    const { data, error } = await supabase
+      .from('samba_contracts')
+      .select('contract_address, user, created_at')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching samba contracts:', error);
+      return [];
+    }
+
+    return data || [];
+  }
+
+  async isSambaContract(contractAddress) {
+    const { data, error } = await supabase
+      .from('samba_contracts')
+      .select('contract_address')
+      .eq('contract_address', contractAddress.toLowerCase())
+      .eq('is_active', true)
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      console.error('Error checking samba contract:', error);
+    }
+    return !!data;
+  }
+
+
 }
 
 
@@ -529,9 +532,6 @@ const db = new DatabaseManager();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-const BACKEND_PUBLIC_KEY = process.env.BACKEND_PUBLIC_KEY;
-const ec = new EC('secp256k1');
-
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -540,60 +540,26 @@ app.use(express.json());
 const verifySignature = async (req, res, next) => {
   try {
     const signature = req.headers['x-signature'];
-    const timestamp = req.headers['x-timestamp'];
-    const nonce = req.headers['x-nonce'];
-    
-    if (!signature || !timestamp || !nonce) {
+
+    console.log("AAAAAAAAAAAAAAAAAAAAAAaaReq headers", req.headers);
+
+    if (!signature) {
       return res.status(401).json({ error: 'Missing signature headers' });
     }
-    
-    // Check timestamp (prevent replay attacks)
-    const now = Date.now();
-    const requestTime = parseInt(timestamp);
-    if (Math.abs(now - requestTime) > 300000) { // 5 minutes
-      return res.status(401).json({ error: 'Request expired' });
-    }
 
-    const normalizedBody = Object.keys(req.body || {}).length === 0 ? null : req.body;
-
+    const expectedSigner = process.env.SAMBA_BACKEND_PUBLIC_KEY;
     
-    // Create the message that was signed
-    const message = JSON.stringify({
-      method: req.method,
-      path: req.path,
-      body: normalizedBody,
-      timestamp: timestamp,
-      nonce: nonce
-    });
-    
-    // Hash the message
-    const messageHash = crypto.createHash('sha256').update(message).digest('hex');
-   
-    // Create public key from hex
-    const publicKey = ec.keyFromPublic(BACKEND_PUBLIC_KEY, 'hex');
-
-    // Parse the signature - convert from r+s hex format to elliptic format
-    const signatureLength = signature.length;
-    if (signatureLength !== 128) { // 64 bytes = 128 hex chars
-      return res.status(401).json({ error: 'Invalid signature length' });
-    }
-    const r = signature.substring(0, 64);
-    const s = signature.substring(64, 128);
-    
-    // Create signature object for elliptic
-    const signatureObj = { r: r, s: s };
-
-    // Verify the signature (elliptic library can handle DER format directly)
-    const isValid = publicKey.verify(messageHash, signatureObj, 'hex');
-    
-    if (!isValid) {
-      console.log('❌ Invalid signature from IP:', req.ip);
+    const recoveredSigner = verifyMessage(JSON.stringify(req.body), signature);
+    if (!recoveredSigner || recoveredSigner.toLowerCase() !== expectedSigner.toLowerCase()) {
+      console.error('❌ Signature verification failed:', {
+        expected: expectedSigner,
+        recovered: recoveredSigner
+      });
       return res.status(401).json({ error: 'Invalid signature' });
     }
-      
-    console.log('✅ Verified signature from IP:', req.ip);
-    next();
     
+    next();
+
   } catch (error) {
     console.error('❌ Signature verification error:', error);
     return res.status(500).json({ error: 'Signature verification failed' });
@@ -601,101 +567,113 @@ const verifySignature = async (req, res, next) => {
 };
 
 // API Routes for Samba Contracts
-app.post('/api/samba-contracts', verifySignature, async (req, res) => {
+app.post('/api/add-contract', verifySignature, async (req, res) => {
   try {
-    const { contractAddress, contractName } = req.body;
-    
-    if (!contractAddress) {
-      return res.status(400).json({ 
-        error: 'contractAddress is required' 
+    const { contract, user } = req.body;
+
+    if (!contract) {
+      return res.status(400).json({
+        error: 'Contract address was not supplied in body'
       });
     }
-    
+    if (!user) {
+      return res.status(400).json({
+        error: 'User email was not supplied in body'
+      });
+    }
+
     // Validate Ethereum address format
-    if (!/^0x[a-fA-F0-9]{40}$/.test(contractAddress)) {
-      return res.status(400).json({ 
-        error: 'Invalid Ethereum address format' 
+    if (!/^0x[a-fA-F0-9]{40}$/.test(contract)) {
+      return res.status(400).json({
+        error: 'Invalid Ethereum address format'
       });
     }
-    
-    const success = await db.addSambaContract(contractAddress, contractName);
-    
+
+    // Validate user email format
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(user)) {
+      return res.status(400).json({
+        error: 'Invalid user email address format'
+      });
+    }
+
+    const success = await db.addSambaContract(contractAddress, user);
+
     if (success) {
-      console.log(`✅ Added samba contract: ${contractAddress} (${contractName || 'Unknown'})`);
-      res.json({ 
-        success: true, 
+      console.log(`✅ Added samba contract: ${contractAddress} for user ${user}`);
+      res.json({
+        success: true,
         message: 'Samba contract added successfully',
         contractAddress: contractAddress.toLowerCase(),
-        contractName: contractName || 'Unknown Contract'
+        user
       });
     } else {
-      res.status(500).json({ 
-        error: 'Failed to add samba contract' 
+      res.status(500).json({
+        error: 'Failed to add samba contract'
       });
     }
-    
+
   } catch (error) {
     console.error('❌ API Error adding samba contract:', error);
-    res.status(500).json({ 
-      error: 'Internal server error' 
+    res.status(500).json({
+      error: 'Internal server error'
     });
   }
 });
 
-app.delete('/api/samba-contracts/:contractAddress', verifySignature, async (req, res) => {
-  try {
-    const { contractAddress } = req.params;
-    
-    if (!contractAddress) {
-      return res.status(400).json({ 
-        error: 'contractAddress is required' 
-      });
-    }
-    
-    // Validate Ethereum address format
-    if (!/^0x[a-fA-F0-9]{40}$/.test(contractAddress)) {
-      return res.status(400).json({ 
-        error: 'Invalid Ethereum address format' 
-      });
-    }
-    
-    const success = await db.removeSambaContract(contractAddress);
-    
-    if (success) {
-      console.log(`✅ Removed samba contract: ${contractAddress}`);
-      res.json({ 
-        success: true, 
-        message: 'Samba contract removed successfully',
-        contractAddress: contractAddress.toLowerCase()
-      });
-    } else {
-      res.status(500).json({ 
-        error: 'Failed to remove samba contract' 
-      });
-    }
-    
-  } catch (error) {
-    console.error('❌ API Error removing samba contract:', error);
-    res.status(500).json({ 
-      error: 'Internal server error' 
-    });
-  }
-});
+// app.delete('/api/samba-contracts/:contractAddress', verifySignature, async (req, res) => {
+//   try {
+//     const { contractAddress } = req.params;
 
-app.get('/api/samba-contracts', verifySignature, async (req, res) => {
-  try {
-    const contracts = await db.getSambaContracts();
-    res.json({ 
-      success: true, 
-      contracts: contracts 
-    });
-  } catch (error) {
-    console.error('❌ API Error fetching samba contracts:', error);
-    res.status(500).json({ 
-      error: 'Internal server error' 
-    });
-  }
-});
+//     if (!contractAddress) {
+//       return res.status(400).json({
+//         error: 'contractAddress is required'
+//       });
+//     }
+
+//     // Validate Ethereum address format
+//     if (!/^0x[a-fA-F0-9]{40}$/.test(contractAddress)) {
+//       return res.status(400).json({
+//         error: 'Invalid Ethereum address format'
+//       });
+//     }
+
+//     const success = await db.removeSambaContract(contractAddress);
+
+//     if (success) {
+//       console.log(`✅ Removed samba contract: ${contractAddress}`);
+//       res.json({
+//         success: true,
+//         message: 'Samba contract removed successfully',
+//         contractAddress: contractAddress.toLowerCase()
+//       });
+//     } else {
+//       res.status(500).json({
+//         error: 'Failed to remove samba contract'
+//       });
+//     }
+
+//   } catch (error) {
+//     console.error('❌ API Error removing samba contract:', error);
+//     res.status(500).json({
+//       error: 'Internal server error'
+//     });
+//   }
+// });
+
+// app.get('/api/samba-contracts', verifySignature, async (req, res) => {
+//   try {
+//     const contracts = await db.getSambaContracts();
+//     res.json({
+//       success: true,
+//       contracts: contracts
+//     });
+//   } catch (error) {
+//     console.error('❌ API Error fetching samba contracts:', error);
+//     res.status(500).json({
+//       error: 'Internal server error'
+//     });
+//   }
+// });
 
 // Start the Express server
 app.listen(PORT, () => {
@@ -710,7 +688,7 @@ const ZKP2P_SNIPER_TOPIC_ID = null;
 const initializeBot = async () => {
   try {
     console.log('🔄 Bot initialization starting...');
-    
+
     // Test Telegram bot connection first
     try {
       const botInfo = await bot.getMe();
@@ -719,7 +697,7 @@ const initializeBot = async () => {
       console.error('❌ Failed to connect to Telegram bot:', error.message);
       throw error;
     }
-    
+
     // Test database connection
     try {
       const { data, error } = await supabase.from('users').select('chat_id').limit(1);
@@ -729,19 +707,19 @@ const initializeBot = async () => {
       console.error('❌ Database connection failed:', error.message);
       throw error;
     }
-    
+
     // Wait for all systems to be ready
     await new Promise(resolve => setTimeout(resolve, 3000));
-    
+
     console.log('📝 Initializing user in database...');
     await db.initUser(ZKP2P_GROUP_ID, 'zkp2p_channel');
-    
+
     console.log('📝 Setting listen all to true...');
     await db.setUserListenAll(ZKP2P_GROUP_ID, true);
     await db.setUserThreshold(ZKP2P_GROUP_ID, 0.1);
 
     console.log(`📤 Attempting to send message to topic ${ZKP2P_TOPIC_ID} in group ${ZKP2P_GROUP_ID}`);
-    
+
     // Test message sending with better error handling
     const result = await bot.sendMessage(ZKP2P_GROUP_ID, '🔄 Bot restarted and ready!', {
       parse_mode: 'Markdown',
@@ -755,16 +733,16 @@ const initializeBot = async () => {
       thread_id: result.message_thread_id,
       is_topic_message: result.is_topic_message
     });
-    
+
   } catch (err) {
     console.error('❌ Bot initialization failed:', err);
     console.error('❌ Error code:', err.code);
     console.error('❌ Error message:', err.message);
-    
+
     if (err.response?.body) {
       console.error('❌ Telegram API response:', JSON.stringify(err.response.body, null, 2));
     }
-    
+
     // Schedule retry
     console.log('🔄 Retrying initialization in 30 seconds...');
     setTimeout(initializeBot, 30000);
@@ -783,16 +761,16 @@ const RATES_CACHE_DURATION = 60000; // 1 minute cache
 
 async function getExchangeRates() {
   const now = Date.now();
-  
+
   // Return cached rates if still fresh
   if (exchangeRatesCache && (now - lastRatesFetch) < RATES_CACHE_DURATION) {
     return exchangeRatesCache;
   }
-  
+
   try {
     const response = await fetch(EXCHANGE_API_URL);
     const data = await response.json();
-    
+
     if (data.result === 'success') {
       exchangeRatesCache = data.conversion_rates;
       lastRatesFetch = now;
@@ -825,7 +803,7 @@ class ResilientWebSocketProvider {
     this.reconnectTimer = null;
     this.keepAliveTimer = null; // Add keep-alive timer
     this.lastActivityTime = Date.now();
-    
+
     this.connect();
   }
 
@@ -835,7 +813,7 @@ class ResilientWebSocketProvider {
 
     try {
       console.log(`🔌 Attempting WebSocket connection (attempt ${this.reconnectAttempts + 1})`);
-      
+
       // Properly cleanup existing provider
       if (this.provider) {
         await this.cleanup();
@@ -853,29 +831,29 @@ class ResilientWebSocketProvider {
       });
 
       this.setupEventListeners();
-      
+
       // Test connection with timeout
       const networkPromise = this.provider.getNetwork();
-      const timeoutPromise = new Promise((_, reject) => 
+      const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Connection timeout')), 15000) // Increased timeout
       );
-      
+
       await Promise.race([networkPromise, timeoutPromise]);
-      
+
       console.log('✅ WebSocket connected successfully');
       this.lastActivityTime = Date.now();
-      
+
       this.reconnectAttempts = 0;
       this.reconnectDelay = 1000;
       this.isConnecting = false;
-      
+
       this.setupContractListening();
       this.startKeepAlive(); // Start keep-alive mechanism
-      
+
     } catch (error) {
       console.error('❌ WebSocket connection failed:', error.message);
       this.isConnecting = false;
-      
+
       // Only schedule reconnect if not destroyed
       if (!this.isDestroyed) {
         this.scheduleReconnect();
@@ -888,10 +866,10 @@ class ResilientWebSocketProvider {
       try {
         // Stop keep-alive first
         this.stopKeepAlive();
-        
+
         // Remove all listeners first
         this.provider.removeAllListeners();
-        
+
         // Close WebSocket connection if it exists
         if (this.provider._websocket) {
           this.provider._websocket.removeAllListeners();
@@ -899,12 +877,12 @@ class ResilientWebSocketProvider {
             this.provider._websocket.close(1000, 'Normal closure'); // Proper close code
           }
         }
-        
+
         // Destroy provider
         if (typeof this.provider.destroy === 'function') {
           await this.provider.destroy();
         }
-        
+
         console.log('🧹 Cleaned up existing provider');
       } catch (error) {
         console.error('⚠️ Error during cleanup:', error.message);
@@ -914,7 +892,7 @@ class ResilientWebSocketProvider {
 
   setupEventListeners() {
     if (!this.provider || this.isDestroyed) return;
-    
+
     if (this.provider._websocket) {
       this.provider._websocket.on('close', (code, reason) => {
         console.log(`🔌 WebSocket closed: ${code} - ${reason}`);
@@ -928,7 +906,7 @@ class ResilientWebSocketProvider {
           }, 2000);
         }
       });
-  
+
       this.provider._websocket.on('error', (error) => {
         console.error('❌ WebSocket error:', error.message);
         this.stopKeepAlive();
@@ -966,14 +944,14 @@ class ResilientWebSocketProvider {
 
   startKeepAlive() {
     this.stopKeepAlive(); // Clear any existing timer
-    
+
     // Send ping every 30 seconds to keep connection alive
     this.keepAliveTimer = setInterval(() => {
       if (this.provider && this.provider._websocket && this.provider._websocket.readyState === 1) {
         try {
           this.provider._websocket.ping();
           console.log('🏓 Sent keep-alive ping');
-          
+
           // Check if we haven't received any activity in 90 seconds
           const timeSinceActivity = Date.now() - this.lastActivityTime;
           if (timeSinceActivity > 90000) {
@@ -997,14 +975,14 @@ class ResilientWebSocketProvider {
 
   setupContractListening() {
     if (!this.provider || this.isDestroyed) return;
-    
+
     try {
       // Add error handling for the event listener
       this.provider.on({ address: this.contractAddress.toLowerCase() }, (log) => {
         this.lastActivityTime = Date.now(); // Update activity time on events
         this.eventHandler(log);
       });
-      
+
       console.log(`👂 Listening for events on contract: ${this.contractAddress}`);
     } catch (error) {
       console.error('❌ Failed to set up contract listening:', error.message);
@@ -1016,28 +994,28 @@ class ResilientWebSocketProvider {
 
   scheduleReconnect() {
     if (this.isConnecting || this.isDestroyed) return;
-    
+
     // Clear existing timer if any
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
     }
-    
+
     this.stopKeepAlive(); // Stop keep-alive during reconnection
-    
+
     this.reconnectAttempts++;
-    
+
     if (this.reconnectAttempts > this.maxReconnectAttempts) {
       console.error(`💀 Max reconnection attempts (${this.maxReconnectAttempts}) reached. Stopping.`);
       return;
     }
 
     const delay = Math.min(
-      this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts), 
+      this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts),
       this.maxReconnectDelay
     );
-    
+
     console.log(`⏰ Scheduling reconnection in ${delay}ms (attempt ${this.reconnectAttempts})`);
-    
+
     this.reconnectTimer = setTimeout(() => {
       if (!this.isDestroyed) {
         this.connect();
@@ -1050,15 +1028,15 @@ class ResilientWebSocketProvider {
     console.log('🔄 Manual restart initiated...');
     this.reconnectAttempts = 0;
     this.reconnectDelay = 1000;
-    
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    
+
     this.stopKeepAlive();
     await this.cleanup();
-    
+
     // Wait a bit before reconnecting
     setTimeout(() => {
       if (!this.isDestroyed) {
@@ -1071,12 +1049,12 @@ class ResilientWebSocketProvider {
   async destroy() {
     console.log('🛑 Destroying WebSocket provider...');
     this.isDestroyed = true;
-    
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    
+
     this.stopKeepAlive();
     await this.cleanup();
     this.provider = null;
@@ -1087,10 +1065,10 @@ class ResilientWebSocketProvider {
   }
 
   get isConnected() {
-    return this.provider && 
-           this.provider._websocket && 
-           this.provider._websocket.readyState === 1 && // WebSocket.OPEN
-           (Date.now() - this.lastActivityTime) < 120000; // Active within 2 minutes
+    return this.provider &&
+      this.provider._websocket &&
+      this.provider._websocket.readyState === 1 && // WebSocket.OPEN
+      (Date.now() - this.lastActivityTime) < 120000; // Active within 2 minutes
   }
 }
 
@@ -1169,7 +1147,7 @@ const abi = [
     uint256 actualGasCost,
     uint256 actualGasUsed
 )`,
-`event DepositConversionRateUpdated(
+  `event DepositConversionRateUpdated(
   uint256 indexed depositId,
   address indexed verifier,
   bytes32 indexed currency,
@@ -1183,9 +1161,9 @@ const processingScheduled = new Set(); // Track which transactions are scheduled
 
 function scheduleTransactionProcessing(txHash) {
   if (processingScheduled.has(txHash)) return; // Already scheduled
-  
+
   processingScheduled.add(txHash);
-  
+
   setTimeout(async () => {
     await processCompletedTransaction(txHash);
     processingScheduled.delete(txHash);
@@ -1195,23 +1173,23 @@ function scheduleTransactionProcessing(txHash) {
 async function processCompletedTransaction(txHash) {
   const txData = pendingTransactions.get(txHash);
   if (!txData) return;
-  
+
   console.log(`🔄 Processing completed transaction ${txHash}`);
-  
+
   // Process pruned intents first, but skip if also fulfilled
   for (const intentHash of txData.pruned) {
     if (txData.fulfilled.has(intentHash)) {
       console.log(`Intent ${intentHash} was both pruned and fulfilled in tx ${txHash}, prioritizing fulfilled status`);
       continue; // Skip sending pruned notification
     }
-    
+
     // Send pruned notification
     const rawIntent = txData.rawIntents.get(intentHash);
     if (rawIntent) {
       await sendPrunedNotification(rawIntent, txHash);
     }
   }
-  
+
   // Process fulfilled intents
   for (const intentHash of txData.fulfilled) {
     const rawIntent = txData.rawIntents.get(intentHash);
@@ -1219,7 +1197,7 @@ async function processCompletedTransaction(txHash) {
       await sendFulfilledNotification(rawIntent, txHash);
     }
   }
-  
+
   // Clean up
   pendingTransactions.delete(txHash);
 }
@@ -1234,16 +1212,16 @@ async function sendFulfilledNotification(rawIntent, txHash) {
     const fiatCode = getFiatCode(storedDetails.fiatCurrency);
     const formattedRate = formatConversionRate(storedDetails.conversionRate, fiatCode);
     rateText = `\n- *Rate:* ${formattedRate}`;
-  
-  // Clean up memory after use
-  intentDetails.delete(intentHash.toLowerCase());
+
+    // Clean up memory after use
+    intentDetails.delete(intentHash.toLowerCase());
   }
-  
+
   const interestedUsers = await db.getUsersInterestedInDeposit(depositId);
   if (interestedUsers.length === 0) return;
-  
+
   console.log(`📤 Sending fulfillment to ${interestedUsers.length} users interested in deposit ${depositId}`);
-  
+
   const message = `
 🟢 *Order Fulfilled*
 - *Deposit ID:* \`${depositId}\`
@@ -1260,9 +1238,9 @@ async function sendFulfilledNotification(rawIntent, txHash) {
   for (const chatId of interestedUsers) {
     await db.updateDepositStatus(chatId, depositId, 'fulfilled', intentHash);
     await db.logEventNotification(chatId, depositId, 'fulfilled');
-    
-    const sendOptions = { 
-      parse_mode: 'Markdown', 
+
+    const sendOptions = {
+      parse_mode: 'Markdown',
       disable_web_page_preview: true,
       reply_markup: createDepositKeyboard(depositId)
     };
@@ -1275,12 +1253,12 @@ async function sendFulfilledNotification(rawIntent, txHash) {
 
 async function sendPrunedNotification(rawIntent, txHash) {
   const { depositId, intentHash } = rawIntent;
-  
+
   const interestedUsers = await db.getUsersInterestedInDeposit(depositId);
   if (interestedUsers.length === 0) return;
-  
+
   console.log(`📤 Sending cancellation to ${interestedUsers.length} users interested in deposit ${depositId}`);
-  
+
   const message = `
 🟠 *Order Cancelled*
 - *Deposit ID:* \`${depositId}\`
@@ -1293,9 +1271,9 @@ async function sendPrunedNotification(rawIntent, txHash) {
   for (const chatId of interestedUsers) {
     await db.updateDepositStatus(chatId, depositId, 'pruned', intentHash);
     await db.logEventNotification(chatId, depositId, 'pruned');
-    
-    const sendOptions = { 
-      parse_mode: 'Markdown', 
+
+    const sendOptions = {
+      parse_mode: 'Markdown',
       disable_web_page_preview: true,
       reply_markup: createDepositKeyboard(depositId)
     };
@@ -1385,49 +1363,49 @@ async function checkSniperOpportunity(depositId, depositAmount, currencyHash, co
   const platformName = getPlatformName(verifierAddress).toLowerCase();
 
   if (!currencyCode) return; // Only skip unknown currencies
-  
+
   console.log(`🎯 Checking sniper opportunity for deposit ${depositId}, currency: ${currencyCode}`);
-  
+
   // Get current exchange rates
   const exchangeRates = await getExchangeRates();
   if (!exchangeRates) {
     console.log('❌ No exchange rates available for sniper check');
     return;
   }
-  
+
   // For USD, market rate is always 1.0 - better to hardcode than to call the api (i guess)
   const marketRate = currencyCode === 'USD' ? 1.0 : exchangeRates[currencyCode];
   if (!marketRate) {
     console.log(`❌ No market rate found for ${currencyCode}`);
     return;
   }
-  
+
   // Calculate rates
   const depositRate = Number(conversionRate) / 1e18; // Convert from wei
   const percentageDiff = ((marketRate - depositRate) / marketRate) * 100;
-  
+
   console.log(`📊 Market rate: ${marketRate} ${currencyCode}/USD`);
   console.log(`📊 Deposit rate: ${depositRate} ${currencyCode}/USD`);
   console.log(`📊 Percentage difference: ${percentageDiff.toFixed(2)}%`);
-  
-// Get users with their custom thresholds and check each one individually
-const interestedUsers = await db.getUsersWithSniper(currencyCode, platformName);
 
-if (!interestedUsers.includes(ZKP2P_GROUP_ID)) {
-  interestedUsers.push(ZKP2P_GROUP_ID);
-}
+  // Get users with their custom thresholds and check each one individually
+  const interestedUsers = await db.getUsersWithSniper(currencyCode, platformName);
 
-if (interestedUsers.length > 0) {
-  console.log(`🎯 Checking thresholds for ${interestedUsers.length} potential users`);
-  
-  for (const chatId of interestedUsers) {
-    const userThreshold = await db.getUserThreshold(chatId);
-    
-    if (percentageDiff >= userThreshold) {
-      console.log(`🎯 SNIPER OPPORTUNITY for user ${chatId}! ${percentageDiff.toFixed(2)}% >= ${userThreshold}%`);
-      
-      const formattedAmount = (Number(depositAmount) / 1e6).toFixed(2);
-      const message = `
+  if (!interestedUsers.includes(ZKP2P_GROUP_ID)) {
+    interestedUsers.push(ZKP2P_GROUP_ID);
+  }
+
+  if (interestedUsers.length > 0) {
+    console.log(`🎯 Checking thresholds for ${interestedUsers.length} potential users`);
+
+    for (const chatId of interestedUsers) {
+      const userThreshold = await db.getUserThreshold(chatId);
+
+      if (percentageDiff >= userThreshold) {
+        console.log(`🎯 SNIPER OPPORTUNITY for user ${chatId}! ${percentageDiff.toFixed(2)}% >= ${userThreshold}%`);
+
+        const formattedAmount = (Number(depositAmount) / 1e6).toFixed(2);
+        const message = `
 🎯 *SNIPER ALERT - ${currencyCode}*
 🏦 *Platform:* ${platformName}
 📊 New Deposit #${depositId}: ${formattedAmount} USDC
@@ -1443,67 +1421,67 @@ if (interestedUsers.length > 0) {
 *You get ${currencyCode} at ${percentageDiff.toFixed(1)}% discount on ${platformName}!*
 `.trim();
 
-      await db.logSniperAlert(chatId, depositId, currencyCode, depositRate, marketRate, percentageDiff);
-      
-const sendOptions = { 
-  parse_mode: 'Markdown',
-  reply_markup: {
-    inline_keyboard: [[
-      {
-        text: `🔗 Snipe Deposit ${depositId}`,
-        url: depositLink(depositId)
+        await db.logSniperAlert(chatId, depositId, currencyCode, depositRate, marketRate, percentageDiff);
+
+        const sendOptions = {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[
+              {
+                text: `🔗 Snipe Deposit ${depositId}`,
+                url: depositLink(depositId)
+              }
+            ]]
+          }
+        };
+
+        // Send sniper messages to the sniper topic
+        if (chatId === ZKP2P_GROUP_ID) {
+          sendOptions.message_thread_id = ZKP2P_SNIPER_TOPIC_ID;
+        }
+
+        bot.sendMessage(chatId, message, sendOptions);
+      } else {
+        console.log(`📊 No opportunity for user ${chatId}: ${percentageDiff.toFixed(2)}% < ${userThreshold}%`);
       }
-    ]]
-  }
-};
-
-// Send sniper messages to the sniper topic
-if (chatId === ZKP2P_GROUP_ID) {
-  sendOptions.message_thread_id = ZKP2P_SNIPER_TOPIC_ID;
-}
-
-bot.sendMessage(chatId, message, sendOptions);
-    } else {
-      console.log(`📊 No opportunity for user ${chatId}: ${percentageDiff.toFixed(2)}% < ${userThreshold}%`);
     }
+  } else {
+    console.log(`📊 No users interested in sniping ${currencyCode} on ${platformName}`);
   }
-} else {
-  console.log(`📊 No users interested in sniping ${currencyCode} on ${platformName}`);
 }
-}
-  
+
 
 // Telegram commands - now using database
 bot.onText(/\/deposit (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const input = match[1].trim().toLowerCase();
-  
+
   // Initialize user
   await db.initUser(chatId, msg.from.username, msg.from.first_name, msg.from.last_name);
-  
+
   if (input === 'all') {
     await db.setUserListenAll(chatId, true);
     bot.sendMessage(chatId, `🌍 *Now listening to ALL deposits!*\n\nYou will receive notifications for every event on every deposit.\n\nUse \`/deposit stop\` to stop listening to all deposits.`, { parse_mode: 'Markdown' });
     return;
   }
-  
+
   if (input === 'stop') {
     await db.setUserListenAll(chatId, false);
     bot.sendMessage(chatId, `🛑 *Stopped listening to all deposits.*\n\nYou will now only receive notifications for specifically tracked deposits.`, { parse_mode: 'Markdown' });
     return;
   }
-  
+
   const newIds = input.split(/[,\s]+/).map(id => parseInt(id.trim())).filter(id => !isNaN(id));
-  
+
   if (newIds.length === 0) {
     bot.sendMessage(chatId, `❌ No valid deposit IDs provided. Use:\n• \`/deposit all\` - Listen to all deposits\n• \`/deposit 123\` - Track specific deposit\n• \`/deposit 123,456,789\` - Track multiple deposits`, { parse_mode: 'Markdown' });
     return;
   }
-  
+
   for (const id of newIds) {
     await db.addUserDeposit(chatId, id);
   }
-  
+
   const userDeposits = await db.getUserDeposits(chatId);
   const idsArray = Array.from(userDeposits).sort((a, b) => a - b);
   bot.sendMessage(chatId, `✅ Now tracking deposit IDs: \`${idsArray.join(', ')}\``, { parse_mode: 'Markdown' });
@@ -1513,19 +1491,19 @@ bot.onText(/\/remove (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const idsString = match[1];
   const idsToRemove = idsString.split(/[,\s]+/).map(id => parseInt(id.trim())).filter(id => !isNaN(id));
-  
+
   if (idsToRemove.length === 0) {
     bot.sendMessage(chatId, `❌ No valid deposit IDs provided. Use: /remove 123 or /remove 123,456,789`, { parse_mode: 'Markdown' });
     return;
   }
-  
+
   for (const id of idsToRemove) {
     await db.removeUserDeposit(chatId, id);
   }
-  
+
   const userDeposits = await db.getUserDeposits(chatId);
   const remainingIds = Array.from(userDeposits).sort((a, b) => a - b);
-  
+
   if (remainingIds.length > 0) {
     bot.sendMessage(chatId, `✅ Removed specified IDs. Still tracking: \`${remainingIds.join(', ')}\``, { parse_mode: 'Markdown' });
   } else {
@@ -1539,13 +1517,13 @@ bot.onText(/\/list/, async (msg) => {
   const userStates = await db.getUserDepositStates(chatId);
   const listeningAll = await db.getUserListenAll(chatId);
   const snipers = await db.getUserSnipers(chatId);
-  
+
   let message = '';
-  
+
   if (listeningAll) {
     message += `🌍 *Listening to ALL deposits*\n\n`;
   }
-  
+
   if (snipers.length > 0) {
     message += `🎯 *Active Snipers:*\n`;
     snipers.forEach(sniper => {
@@ -1554,24 +1532,24 @@ bot.onText(/\/list/, async (msg) => {
     });
     message += `\n`;
   }
-  
+
   const idsArray = Array.from(userDeposits).sort((a, b) => a - b);
   if (idsArray.length === 0 && !listeningAll && snipers.length === 0) {
     bot.sendMessage(chatId, `📋 No deposits currently being tracked and no snipers set.`, { parse_mode: 'Markdown' });
     return;
   }
-  
+
   if (idsArray.length > 0) {
     message += `📋 *Specifically tracking ${idsArray.length} deposits:*\n\n`;
     idsArray.forEach(id => {
       const state = userStates.get(id);
       const status = state ? state.status : 'tracking';
-      const emoji = status === 'fulfilled' ? '✅' : 
-                    status === 'pruned' ? '🟠' : '👀';
+      const emoji = status === 'fulfilled' ? '✅' :
+        status === 'pruned' ? '🟠' : '👀';
       message += `${emoji} \`${id}\` - ${status}\n`;
     });
   }
-  
+
   bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 });
 
@@ -1583,11 +1561,11 @@ bot.onText(/\/clearall/, async (msg) => {
 
 bot.onText(/\/status/, async (msg) => {
   const chatId = msg.chat.id;
-  
+
   try {
     const wsConnected = resilientProvider?.isConnected || false;
     const wsStatus = wsConnected ? '🟢 Connected' : '🔴 Disconnected';
-    
+
     // Test database connection
     let dbStatus = '🔴 Disconnected';
     try {
@@ -1596,7 +1574,7 @@ bot.onText(/\/status/, async (msg) => {
     } catch (error) {
       console.error('Database test failed:', error);
     }
-    
+
     // Test Telegram connection
     let botStatus = '🔴 Disconnected';
     try {
@@ -1605,23 +1583,23 @@ bot.onText(/\/status/, async (msg) => {
     } catch (error) {
       console.error('Bot test failed:', error);
     }
-    
+
     const listeningAll = await db.getUserListenAll(chatId);
     const trackedCount = (await db.getUserDeposits(chatId)).size;
     const snipers = await db.getUserSnipers(chatId);
-    
+
     let message = `🔧 *System Status:*\n\n`;
     message += `• *WebSocket:* ${wsStatus}\n`;
     message += `• *Database:* ${dbStatus}\n`;
     message += `• *Telegram:* ${botStatus}\n\n`;
     message += `📊 *Your Settings:*\n`;
-    
+
     if (listeningAll) {
       message += `• *Listening to:* ALL deposits\n`;
     } else {
       message += `• *Tracking:* ${trackedCount} specific deposits\n`;
     }
-    
+
     if (snipers.length > 0) {
       message += `• *Sniping:* `;
       const sniperTexts = snipers.map(sniper => {
@@ -1630,14 +1608,14 @@ bot.onText(/\/status/, async (msg) => {
       });
       message += `${sniperTexts.join(', ')}\n`;
     }
-    
+
     // Add reconnection info if disconnected
     if (!wsConnected && resilientProvider) {
       message += `\n⚠️ *WebSocket reconnection attempts:* ${resilientProvider.reconnectAttempts}/${resilientProvider.maxReconnectAttempts}`;
     }
-    
+
     bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-    
+
   } catch (error) {
     console.error('Status command failed:', error);
     bot.sendMessage(chatId, '❌ Failed to get status', { parse_mode: 'Markdown' });
@@ -1649,18 +1627,18 @@ bot.onText(/\/status/, async (msg) => {
 bot.onText(/\/sniper threshold (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const input = match[1].trim();
-  
+
   await db.initUser(chatId, msg.from.username, msg.from.first_name, msg.from.last_name);
-  
+
   const threshold = parseFloat(input);
-  
+
   if (isNaN(threshold)) {
     bot.sendMessage(chatId, `❌ Invalid threshold. Please provide a number (e.g., 0.5 for 0.5%)`, { parse_mode: 'Markdown' });
     return;
   }
-  
+
   await db.setUserThreshold(chatId, threshold);
-  
+
   bot.sendMessage(chatId, `🎯 *Sniper threshold set to ${threshold}%*\n\nYou'll now be alerted when deposits offer rates ${threshold}% or better than market rates.`, { parse_mode: 'Markdown' });
 });
 
@@ -1668,9 +1646,9 @@ bot.onText(/\/sniper threshold (.+)/, async (msg, match) => {
 bot.onText(/\/sniper (?!threshold)(.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const input = match[1].trim().toLowerCase();
-  
+
   await db.initUser(chatId, msg.from.username, msg.from.first_name, msg.from.last_name);
-  
+
   if (input === 'list') {
     const snipers = await db.getUserSnipers(chatId);
     if (snipers.length === 0) {
@@ -1685,34 +1663,34 @@ bot.onText(/\/sniper (?!threshold)(.+)/, async (msg, match) => {
     }
     return;
   }
-    
-  
+
+
   if (input === 'clear') {
     await db.removeUserSniper(chatId);
     bot.sendMessage(chatId, `🎯 Cleared all sniper settings.`, { parse_mode: 'Markdown' });
     return;
   }
-  
+
   // Parse input: "eur" or "eur revolut"
   const parts = input.split(' ');
   const currency = parts[0].toUpperCase();
   const platform = parts[1] ? parts[1].toLowerCase() : null;
-  
+
   const supportedCurrencies = Object.values(currencyHashToCode);
   const supportedPlatforms = ['revolut', 'wise', 'cashapp', 'venmo', 'zelle'];
-  
+
   if (!supportedCurrencies.includes(currency)) {
     bot.sendMessage(chatId, `❌ Currency '${currency}' not supported.\n\n*Supported currencies:*\n${supportedCurrencies.join(', ')}`, { parse_mode: 'Markdown' });
     return;
   }
-  
+
   if (platform && !supportedPlatforms.includes(platform)) {
     bot.sendMessage(chatId, `❌ Platform '${platform}' not supported.\n\n*Supported platforms:*\n${supportedPlatforms.join(', ')}`, { parse_mode: 'Markdown' });
     return;
   }
-  
+
   await db.setUserSniper(chatId, currency, platform);
-  
+
   const platformText = platform ? ` on ${platform}` : ' (all platforms)';
   bot.sendMessage(chatId, `🎯 *Sniper activated for ${currency}${platformText}!*\n\nYou'll be alerted when new deposits offer better rates than market.`, { parse_mode: 'Markdown' });
 });
@@ -1720,14 +1698,14 @@ bot.onText(/\/sniper (?!threshold)(.+)/, async (msg, match) => {
 bot.onText(/\/unsnipe (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const input = match[1].trim().toLowerCase();
-  
+
   // Parse input: "eur" or "eur revolut"
   const parts = input.split(' ');
   const currency = parts[0].toUpperCase();
   const platform = parts[1] ? parts[1].toLowerCase() : null;
-  
+
   await db.removeUserSniper(chatId, currency, platform);
-  
+
   const platformText = platform ? ` on ${platform}` : ' (all platforms)';
   bot.sendMessage(chatId, `🎯 Stopped sniping ${currency}${platformText}.`, { parse_mode: 'Markdown' });
 });
@@ -1763,7 +1741,7 @@ bot.onText(/\/start/, (msg) => {
 
 *Note: Each user has their own settings. Sniper alerts you when deposits offer better exchange rates than market!*
 `.trim();
-  
+
   bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
 
@@ -1798,7 +1776,7 @@ bot.onText(/\/help/, (msg) => {
 
 *Note: Each user has their own settings. Sniper alerts you when deposits offer better exchange rates than market!*
 `.trim();
-  
+
   bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
 
@@ -1808,24 +1786,24 @@ const handleContractEvent = async (log) => {
   console.log(log);
 
   try {
-    const parsed = iface.parseLog({ 
-      data: log.data, 
-      topics: log.topics 
+    const parsed = iface.parseLog({
+      data: log.data,
+      topics: log.topics
     });
-    
+
     if (!parsed) {
       console.log('⚠️ Log format did not match our ABI');
       console.log('📝 Event signature:', log.topics[0]);
-      
+
       if (log.topics.length >= 3) {
         const topicDepositId = parseInt(log.topics[2], 16);
         console.log('📊 Extracted deposit ID from topic:', topicDepositId);
-    
-        
+
+
         const interestedUsers = await db.getUsersInterestedInDeposit(topicDepositId);
         if (interestedUsers.length > 0) {
           console.log(`⚠️ Sending unrecognized event to ${interestedUsers.length} users`);
-          
+
           const message = `
 ⚠️ *Unrecognized Event for Deposit*
 • *Deposit ID:* \`${topicDepositId}\`
@@ -1833,10 +1811,10 @@ const handleContractEvent = async (log) => {
 • *Block:* ${log.blockNumber}
 • *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
 `.trim();
-          
+
           interestedUsers.forEach(chatId => {
-            const sendOptions = { 
-              parse_mode: 'Markdown', 
+            const sendOptions = {
+              parse_mode: 'Markdown',
               disable_web_page_preview: true,
               reply_markup: createDepositKeyboard(topicDepositId)
             };
@@ -1849,153 +1827,153 @@ const handleContractEvent = async (log) => {
       }
       return;
     }
-    
+
     console.log('✅ Parsed log:', parsed.name);
     console.log('🔍 Args:', parsed.args);
 
     const { name } = parsed;
 
     if (name === 'IntentSignaled') {
-      const { intentHash, depositId, verifier, owner, to, amount, fiatCurrency, conversionRate, timestamp } = parsed.args;    
+      const { intentHash, depositId, verifier, owner, to, amount, fiatCurrency, conversionRate, timestamp } = parsed.args;
       const id = Number(depositId);
       const fiatCode = getFiatCode(fiatCurrency);
       const fiatAmount = ((Number(amount) / 1e6) * (Number(conversionRate) / 1e18)).toFixed(2);
       const platformName = getPlatformName(verifier);
       const formattedRate = formatConversionRate(conversionRate, fiatCode);
-      
+
       console.log('🧪 IntentSignaled depositId:', id);
-      
-//       intentDetails.set(intentHash.toLowerCase(), { fiatCurrency, conversionRate, verifier });
-      
-//       const interestedUsers = await db.getUsersInterestedInDeposit(id);
-//       if (interestedUsers.length === 0) {
-//         console.log('🚫 Ignored — no users interested in this depositId.');
-//         return;
-//       }
 
-//       console.log(`📤 Sending to ${interestedUsers.length} users interested in deposit ${id}`);
+      //       intentDetails.set(intentHash.toLowerCase(), { fiatCurrency, conversionRate, verifier });
 
-//       const message = `
-// 🟡 *Order Created*
-// • *Deposit ID:* \`${id}\`
-// • *Order ID:* \`${intentHash}\`
-// • *Platform:* ${platformName}
-// • *Owner:* \`${owner}\`
-// • *To:* \`${to}\`
-// • *Amount:* ${formatUSDC(amount)} USDC
-// • *Fiat Amount:* ${fiatAmount} ${fiatCode} 
-// • *Rate:* ${formattedRate}
-// • *Time:* ${formatTimestamp(timestamp)}
-// • *Block:* ${log.blockNumber}
-// • *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
-// `.trim();
+      //       const interestedUsers = await db.getUsersInterestedInDeposit(id);
+      //       if (interestedUsers.length === 0) {
+      //         console.log('🚫 Ignored — no users interested in this depositId.');
+      //         return;
+      //       }
 
-//       for (const chatId of interestedUsers) {
-//         await db.updateDepositStatus(chatId, id, 'signaled', intentHash);
-//         await db.logEventNotification(chatId, id, 'signaled');
-        
-//         const sendOptions = { 
-//           parse_mode: 'Markdown', 
-//           disable_web_page_preview: true,
-//           reply_markup: createDepositKeyboard(id)
-//         };
-//         if (chatId === ZKP2P_GROUP_ID) {
-//           sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
-//         }
-//         bot.sendMessage(chatId, message, sendOptions);
-//       }
+      //       console.log(`📤 Sending to ${interestedUsers.length} users interested in deposit ${id}`);
+
+      //       const message = `
+      // 🟡 *Order Created*
+      // • *Deposit ID:* \`${id}\`
+      // • *Order ID:* \`${intentHash}\`
+      // • *Platform:* ${platformName}
+      // • *Owner:* \`${owner}\`
+      // • *To:* \`${to}\`
+      // • *Amount:* ${formatUSDC(amount)} USDC
+      // • *Fiat Amount:* ${fiatAmount} ${fiatCode} 
+      // • *Rate:* ${formattedRate}
+      // • *Time:* ${formatTimestamp(timestamp)}
+      // • *Block:* ${log.blockNumber}
+      // • *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
+      // `.trim();
+
+      //       for (const chatId of interestedUsers) {
+      //         await db.updateDepositStatus(chatId, id, 'signaled', intentHash);
+      //         await db.logEventNotification(chatId, id, 'signaled');
+
+      //         const sendOptions = { 
+      //           parse_mode: 'Markdown', 
+      //           disable_web_page_preview: true,
+      //           reply_markup: createDepositKeyboard(id)
+      //         };
+      //         if (chatId === ZKP2P_GROUP_ID) {
+      //           sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
+      //         }
+      //         bot.sendMessage(chatId, message, sendOptions);
+      //       }
     }
 
-if (name === 'IntentFulfilled') {
-  const { intentHash, depositId, verifier, owner, to, amount, sustainabilityFee, verifierFee } = parsed.args;
-  const txHash = log.transactionHash;
-  const id = Number(depositId);
-  
-  console.log('🧪 IntentFulfilled collected for batching - depositId:', id);
-  
-  // Initialize transaction data if not exists
-  if (!pendingTransactions.has(txHash)) {
-    pendingTransactions.set(txHash, {
-      fulfilled: new Set(),
-      pruned: new Set(),
-      blockNumber: log.blockNumber,
-      rawIntents: new Map()
-    });
-  }
-  
-  // Store the fulfillment data
-  const txData = pendingTransactions.get(txHash);
-  txData.fulfilled.add(intentHash.toLowerCase());
-  txData.rawIntents.set(intentHash.toLowerCase(), {
-    type: 'fulfilled',
-    depositId: id,
-    verifier,
-    owner,
-    to,
-    amount,
-    sustainabilityFee,
-    verifierFee,
-    intentHash
-  });
-  
-  // Schedule processing this transaction
-  scheduleTransactionProcessing(txHash);
-}
+    if (name === 'IntentFulfilled') {
+      const { intentHash, depositId, verifier, owner, to, amount, sustainabilityFee, verifierFee } = parsed.args;
+      const txHash = log.transactionHash;
+      const id = Number(depositId);
 
-if (name === 'IntentPruned') {
-  const { intentHash, depositId } = parsed.args;
-  const txHash = log.transactionHash;
-  const id = Number(depositId);
-  
-  console.log('🧪 IntentPruned collected for batching - depositId:', id);
-  
-  // Initialize transaction data if not exists
-  if (!pendingTransactions.has(txHash)) {
-    pendingTransactions.set(txHash, {
-      fulfilled: new Set(),
-      pruned: new Set(),
-      blockNumber: log.blockNumber,
-      rawIntents: new Map()
-    });
-  }
-  
-  // Store the pruned data
-  const txData = pendingTransactions.get(txHash);
-  txData.pruned.add(intentHash.toLowerCase());
-  txData.rawIntents.set(intentHash.toLowerCase(), {
-    type: 'pruned',
-    depositId: id,
-    intentHash
-  });
-  
-  // Schedule processing this transaction
-  scheduleTransactionProcessing(txHash);
-}
+      console.log('🧪 IntentFulfilled collected for batching - depositId:', id);
 
-if (name === 'DepositWithdrawn') {
-  const { depositId, depositor, amount } = parsed.args;
-  const id = Number(depositId);
-  
-  console.log(`💸 DepositWithdrawn: ${formatUSDC(amount)} USDC from deposit ${id} by ${depositor} - ignored`);
-  return;
-}
+      // Initialize transaction data if not exists
+      if (!pendingTransactions.has(txHash)) {
+        pendingTransactions.set(txHash, {
+          fulfilled: new Set(),
+          pruned: new Set(),
+          blockNumber: log.blockNumber,
+          rawIntents: new Map()
+        });
+      }
 
-if (name === 'DepositClosed') {
-  const { depositId, depositor } = parsed.args;
-  const id = Number(depositId);
-  
-  console.log(`🔒 DepositClosed: deposit ${id} by ${depositor} - ignored`);
-  return;
-}
+      // Store the fulfillment data
+      const txData = pendingTransactions.get(txHash);
+      txData.fulfilled.add(intentHash.toLowerCase());
+      txData.rawIntents.set(intentHash.toLowerCase(), {
+        type: 'fulfilled',
+        depositId: id,
+        verifier,
+        owner,
+        to,
+        amount,
+        sustainabilityFee,
+        verifierFee,
+        intentHash
+      });
 
-if (name === 'BeforeExecution') {
-  console.log(`🛠️ BeforeExecution event detected at block ${log.blockNumber}`);
-  return;
-}
+      // Schedule processing this transaction
+      scheduleTransactionProcessing(txHash);
+    }
 
-if (name === 'UserOperationEvent') {
-  const { userOpHash, sender, paymaster, nonce, success, actualGasCost, actualGasUsed } = parsed.args;
-  console.log(`📡 UserOperationEvent:
+    if (name === 'IntentPruned') {
+      const { intentHash, depositId } = parsed.args;
+      const txHash = log.transactionHash;
+      const id = Number(depositId);
+
+      console.log('🧪 IntentPruned collected for batching - depositId:', id);
+
+      // Initialize transaction data if not exists
+      if (!pendingTransactions.has(txHash)) {
+        pendingTransactions.set(txHash, {
+          fulfilled: new Set(),
+          pruned: new Set(),
+          blockNumber: log.blockNumber,
+          rawIntents: new Map()
+        });
+      }
+
+      // Store the pruned data
+      const txData = pendingTransactions.get(txHash);
+      txData.pruned.add(intentHash.toLowerCase());
+      txData.rawIntents.set(intentHash.toLowerCase(), {
+        type: 'pruned',
+        depositId: id,
+        intentHash
+      });
+
+      // Schedule processing this transaction
+      scheduleTransactionProcessing(txHash);
+    }
+
+    if (name === 'DepositWithdrawn') {
+      const { depositId, depositor, amount } = parsed.args;
+      const id = Number(depositId);
+
+      console.log(`💸 DepositWithdrawn: ${formatUSDC(amount)} USDC from deposit ${id} by ${depositor} - ignored`);
+      return;
+    }
+
+    if (name === 'DepositClosed') {
+      const { depositId, depositor } = parsed.args;
+      const id = Number(depositId);
+
+      console.log(`🔒 DepositClosed: deposit ${id} by ${depositor} - ignored`);
+      return;
+    }
+
+    if (name === 'BeforeExecution') {
+      console.log(`🛠️ BeforeExecution event detected at block ${log.blockNumber}`);
+      return;
+    }
+
+    if (name === 'UserOperationEvent') {
+      const { userOpHash, sender, paymaster, nonce, success, actualGasCost, actualGasUsed } = parsed.args;
+      console.log(`📡 UserOperationEvent:
   • Hash: ${userOpHash}
   • Sender: ${sender}
   • Paymaster: ${paymaster}
@@ -2004,70 +1982,70 @@ if (name === 'UserOperationEvent') {
   • Gas Used: ${actualGasUsed}
   • Gas Cost: ${actualGasCost}
   • Block: ${log.blockNumber}`);
-  return;
-}
+      return;
+    }
 
-    
-if (name === 'DepositCurrencyRateUpdated') {
-  const { depositId, verifier, currency, conversionRate } = parsed.args;
-  const id = Number(depositId);
-  const fiatCode = getFiatCode(currency);
-  const rate = (Number(conversionRate) / 1e18).toFixed(6);
-  const platform = getPlatformName(verifier);
 
-  console.log(`📶 DepositCurrencyRateUpdated - ID: ${id}, ${platform}, ${fiatCode} rate updated to ${rate}`);
-  
-  // Check for sniper opportunity with updated rate
-  const depositAmount = await db.getDepositAmount(id);
-  if (depositAmount > 0) {
-    console.log(`🎯 Rechecking sniper opportunity due to rate update for deposit ${id}`);
-    await checkSniperOpportunity(id, depositAmount, currency, conversionRate, verifier);
-  }
-}
+    if (name === 'DepositCurrencyRateUpdated') {
+      const { depositId, verifier, currency, conversionRate } = parsed.args;
+      const id = Number(depositId);
+      const fiatCode = getFiatCode(currency);
+      const rate = (Number(conversionRate) / 1e18).toFixed(6);
+      const platform = getPlatformName(verifier);
 
-if (name === 'DepositConversionRateUpdated') {
-  const { depositId, verifier, currency, newConversionRate } = parsed.args;
-  const id = Number(depositId);
-  const fiatCode = getFiatCode(currency);
-  const rate = (Number(newConversionRate) / 1e18).toFixed(6);
-  const platform = getPlatformName(verifier);
+      console.log(`📶 DepositCurrencyRateUpdated - ID: ${id}, ${platform}, ${fiatCode} rate updated to ${rate}`);
 
-  console.log(`📶 DepositConversionRateUpdated - ID: ${id}, ${platform}, ${fiatCode} rate updated to ${rate}`);
-  
-  // Check for sniper opportunity with updated rate
-  const depositAmount = await db.getDepositAmount(id);
-  if (depositAmount > 0) {
-    console.log(`🎯 Rechecking sniper opportunity due to conversion rate update for deposit ${id}`);
-    await checkSniperOpportunity(id, depositAmount, currency, newConversionRate, verifier);
-  }
-}
-    
-    
-if (name === 'DepositReceived') {
-  const { depositId, depositor, token, amount, intentAmountRange } = parsed.args;
-  const id = Number(depositId);
-  const usdcAmount = Number(amount);
-  
-  console.log(`💰 DepositReceived: ${id} with ${formatUSDC(amount)} USDC`);
-  
-  // Store the deposit amount for later sniper use
-  await db.storeDepositAmount(id, usdcAmount);
+      // Check for sniper opportunity with updated rate
+      const depositAmount = await db.getDepositAmount(id);
+      if (depositAmount > 0) {
+        console.log(`🎯 Rechecking sniper opportunity due to rate update for deposit ${id}`);
+        await checkSniperOpportunity(id, depositAmount, currency, conversionRate, verifier);
+      }
+    }
 
-  // Check if this deposit is from a samba contract
-  const isSambaContract = await db.isSambaContract(depositor);
-  if (!isSambaContract) {
-    console.log(`🚫 Deposit ${id} not from samba contract ${depositor} - ignoring`);
-    return;
-  }
+    if (name === 'DepositConversionRateUpdated') {
+      const { depositId, verifier, currency, newConversionRate } = parsed.args;
+      const id = Number(depositId);
+      const fiatCode = getFiatCode(currency);
+      const rate = (Number(newConversionRate) / 1e18).toFixed(6);
+      const platform = getPlatformName(verifier);
 
-  console.log(`✅ Deposit ${id} is from samba contract ${depositor} - processing`);
-  
-  // Send notification for new deposits from samba contracts
-  const interestedUsers = await db.getUsersInterestedInDeposit(id);
-  if (interestedUsers.length > 0) {
-    console.log(`📢 Sending new deposit notification to ${interestedUsers.length} users for samba deposit ${id}`);
-    
-    const message = `
+      console.log(`📶 DepositConversionRateUpdated - ID: ${id}, ${platform}, ${fiatCode} rate updated to ${rate}`);
+
+      // Check for sniper opportunity with updated rate
+      const depositAmount = await db.getDepositAmount(id);
+      if (depositAmount > 0) {
+        console.log(`🎯 Rechecking sniper opportunity due to conversion rate update for deposit ${id}`);
+        await checkSniperOpportunity(id, depositAmount, currency, newConversionRate, verifier);
+      }
+    }
+
+
+    if (name === 'DepositReceived') {
+      const { depositId, depositor, token, amount, intentAmountRange } = parsed.args;
+      const id = Number(depositId);
+      const usdcAmount = Number(amount);
+
+      console.log(`💰 DepositReceived: ${id} with ${formatUSDC(amount)} USDC`);
+
+      // Store the deposit amount for later sniper use
+      await db.storeDepositAmount(id, usdcAmount);
+
+      // Check if this deposit is from a samba contract
+      const isSambaContract = await db.isSambaContract(depositor);
+      if (!isSambaContract) {
+        console.log(`🚫 Deposit ${id} not from samba contract ${depositor} - ignoring`);
+        return;
+      }
+
+      console.log(`✅ Deposit ${id} is from samba contract ${depositor} - processing`);
+
+      // Send notification for new deposits from samba contracts
+      const interestedUsers = await db.getUsersInterestedInDeposit(id);
+      if (interestedUsers.length > 0) {
+        console.log(`📢 Sending new deposit notification to ${interestedUsers.length} users for samba deposit ${id}`);
+
+        const message = `
 �� *New Samba Deposit Created*
 • *Deposit ID:* \`${id}\`
 • *Contract:* \`${depositor}\`
@@ -2078,36 +2056,36 @@ if (name === 'DepositReceived') {
 • *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
 `.trim();
 
-    for (const chatId of interestedUsers) {
-      const sendOptions = { 
-        parse_mode: 'Markdown', 
-        disable_web_page_preview: true,
-        reply_markup: createDepositKeyboard(id)
-      };
-      if (chatId === ZKP2P_GROUP_ID) {
-        sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
+        for (const chatId of interestedUsers) {
+          const sendOptions = {
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true,
+            reply_markup: createDepositKeyboard(id)
+          };
+          if (chatId === ZKP2P_GROUP_ID) {
+            sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
+          }
+          bot.sendMessage(chatId, message, sendOptions);
+        }
+      } else {
+        console.log(`🚫 No users interested in deposit ${id} - no notification sent`);
       }
-      bot.sendMessage(chatId, message, sendOptions);
     }
-  } else {
-    console.log(`🚫 No users interested in deposit ${id} - no notification sent`);
-  }
-}
 
     // NEW: Handle DepositCurrencyAdded for sniper functionality
-  if (name === 'DepositCurrencyAdded') {
-    const { depositId, verifier, currency, conversionRate } = parsed.args;  
-    const id = Number(depositId);
-    
-    console.log('🎯 DepositCurrencyAdded detected:', id);
-    
-    // Get the actual deposit amount
-    const depositAmount = await db.getDepositAmount(id);
-    console.log(`💰 Retrieved deposit amount: ${depositAmount} (${formatUSDC(depositAmount)} USDC)`);
-    
-    // Check for sniper opportunity with real amount
-    await checkSniperOpportunity(id, depositAmount, currency, conversionRate, verifier);
-  }
+    if (name === 'DepositCurrencyAdded') {
+      const { depositId, verifier, currency, conversionRate } = parsed.args;
+      const id = Number(depositId);
+
+      console.log('🎯 DepositCurrencyAdded detected:', id);
+
+      // Get the actual deposit amount
+      const depositAmount = await db.getDepositAmount(id);
+      console.log(`💰 Retrieved deposit amount: ${depositAmount} (${formatUSDC(depositAmount)} USDC)`);
+
+      // Check for sniper opportunity with real amount
+      await checkSniperOpportunity(id, depositAmount, currency, conversionRate, verifier);
+    }
 
   } catch (err) {
     console.error('❌ Failed to parse log:', err.message);
@@ -2133,19 +2111,19 @@ console.log(`📡 Contract: ${contractAddress}`);
 // Improved graceful shutdown with proper cleanup
 const gracefulShutdown = async (signal) => {
   console.log(`🔄 Received ${signal}, shutting down gracefully...`);
-  
+
   try {
     // Stop accepting new connections
     if (resilientProvider) {
       await resilientProvider.destroy();
     }
-    
+
     // Stop the Telegram bot
     if (bot) {
       console.log('🛑 Stopping Telegram bot...');
       await bot.stopPolling();
     }
-    
+
     // Close Express server properly
     if (app) {
       console.log('🛑 Closing Express server...');
@@ -2154,10 +2132,10 @@ const gracefulShutdown = async (signal) => {
     }
     // Close database connections (if any)
     console.log('🛑 Cleaning up resources...');
-    
+
     console.log('✅ Graceful shutdown completed');
     process.exit(0);
-    
+
   } catch (error) {
     console.error('❌ Error during shutdown:', error);
     process.exit(1);
@@ -2168,7 +2146,7 @@ const gracefulShutdown = async (signal) => {
 process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught exception:', error);
   console.error('Stack trace:', error.stack);
-  
+
   // Attempt to restart WebSocket if it's a connection issue
   if (error.message.includes('WebSocket') || error.message.includes('ECONNRESET')) {
     console.log('🔄 Attempting to restart WebSocket due to connection error...');
@@ -2180,10 +2158,10 @@ process.on('uncaughtException', (error) => {
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('❌ Unhandled rejection at:', promise, 'reason:', reason);
-  
+
   // Attempt to restart WebSocket if it's a connection issue
-  if (reason && reason.message && 
-      (reason.message.includes('WebSocket') || reason.message.includes('ECONNRESET'))) {
+  if (reason && reason.message &&
+    (reason.message.includes('WebSocket') || reason.message.includes('ECONNRESET'))) {
     console.log('🔄 Attempting to restart WebSocket due to rejection...');
     if (resilientProvider) {
       resilientProvider.restart();
