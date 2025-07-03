@@ -4,13 +4,15 @@ const TelegramBot = require('node-telegram-bot-api');
 const { createClient } = require('@supabase/supabase-js');
 const express = require('express');
 const cors = require('cors');
+const crypto = require('crypto');
+const EC = require('elliptic').ec; 
+
 
 // Supabase setup
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
 );
-
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
@@ -527,12 +529,79 @@ const db = new DatabaseManager();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+const BACKEND_PUBLIC_KEY = process.env.BACKEND_PUBLIC_KEY;
+const ec = new EC('secp256k1');
+
 // Middleware
 app.use(cors());
 app.use(express.json());
 
+// Add the verifySignature function here - right after middleware, before routes
+const verifySignature = async (req, res, next) => {
+  try {
+    const signature = req.headers['x-signature'];
+    const timestamp = req.headers['x-timestamp'];
+    const nonce = req.headers['x-nonce'];
+    
+    if (!signature || !timestamp || !nonce) {
+      return res.status(401).json({ error: 'Missing signature headers' });
+    }
+    
+    // Check timestamp (prevent replay attacks)
+    const now = Date.now();
+    const requestTime = parseInt(timestamp);
+    if (Math.abs(now - requestTime) > 300000) { // 5 minutes
+      return res.status(401).json({ error: 'Request expired' });
+    }
+
+    const normalizedBody = Object.keys(req.body || {}).length === 0 ? null : req.body;
+
+    
+    // Create the message that was signed
+    const message = JSON.stringify({
+      method: req.method,
+      path: req.path,
+      body: normalizedBody,
+      timestamp: timestamp,
+      nonce: nonce
+    });
+    
+    // Hash the message
+    const messageHash = crypto.createHash('sha256').update(message).digest('hex');
+   
+    // Create public key from hex
+    const publicKey = ec.keyFromPublic(BACKEND_PUBLIC_KEY, 'hex');
+
+    // Parse the signature - convert from r+s hex format to elliptic format
+    const signatureLength = signature.length;
+    if (signatureLength !== 128) { // 64 bytes = 128 hex chars
+      return res.status(401).json({ error: 'Invalid signature length' });
+    }
+    const r = signature.substring(0, 64);
+    const s = signature.substring(64, 128);
+    
+    // Create signature object for elliptic
+    const signatureObj = { r: r, s: s };
+
+    // Verify the signature (elliptic library can handle DER format directly)
+    const isValid = publicKey.verify(messageHash, signatureObj, 'hex');
+    
+    if (!isValid) {
+      console.log('❌ Invalid signature from IP:', req.ip);
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+      
+    console.log('✅ Verified signature from IP:', req.ip);
+    next();
+    
+  } catch (error) {
+    console.error('❌ Signature verification error:', error);
+    return res.status(500).json({ error: 'Signature verification failed' });
+  }
+};
+
 // API Routes for Samba Contracts
-app.post('/api/samba-contracts', async (req, res) => {
+app.post('/api/samba-contracts', verifySignature, async (req, res) => {
   try {
     const { contractAddress, contractName } = req.body;
     
@@ -573,7 +642,7 @@ app.post('/api/samba-contracts', async (req, res) => {
   }
 });
 
-app.delete('/api/samba-contracts/:contractAddress', async (req, res) => {
+app.delete('/api/samba-contracts/:contractAddress', verifySignature, async (req, res) => {
   try {
     const { contractAddress } = req.params;
     
@@ -613,7 +682,7 @@ app.delete('/api/samba-contracts/:contractAddress', async (req, res) => {
   }
 });
 
-app.get('/api/samba-contracts', async (req, res) => {
+app.get('/api/samba-contracts', verifySignature, async (req, res) => {
   try {
     const contracts = await db.getSambaContracts();
     res.json({ 
