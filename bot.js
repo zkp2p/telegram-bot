@@ -2,12 +2,15 @@ require('dotenv').config();
 const { WebSocketProvider, Interface } = require('ethers');
 const TelegramBot = require('node-telegram-bot-api');
 const { createClient } = require('@supabase/supabase-js');
+const express = require('express');
+const cors = require('cors');
 
 // Supabase setup
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
 );
+
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
@@ -519,6 +522,117 @@ async isSambaContract(contractAddress) {
 
 
 const db = new DatabaseManager();
+
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// API Routes for Samba Contracts
+app.post('/api/samba-contracts', async (req, res) => {
+  try {
+    const { contractAddress, contractName } = req.body;
+    
+    if (!contractAddress) {
+      return res.status(400).json({ 
+        error: 'contractAddress is required' 
+      });
+    }
+    
+    // Validate Ethereum address format
+    if (!/^0x[a-fA-F0-9]{40}$/.test(contractAddress)) {
+      return res.status(400).json({ 
+        error: 'Invalid Ethereum address format' 
+      });
+    }
+    
+    const success = await db.addSambaContract(contractAddress, contractName);
+    
+    if (success) {
+      console.log(`✅ Added samba contract: ${contractAddress} (${contractName || 'Unknown'})`);
+      res.json({ 
+        success: true, 
+        message: 'Samba contract added successfully',
+        contractAddress: contractAddress.toLowerCase(),
+        contractName: contractName || 'Unknown Contract'
+      });
+    } else {
+      res.status(500).json({ 
+        error: 'Failed to add samba contract' 
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ API Error adding samba contract:', error);
+    res.status(500).json({ 
+      error: 'Internal server error' 
+    });
+  }
+});
+
+app.delete('/api/samba-contracts/:contractAddress', async (req, res) => {
+  try {
+    const { contractAddress } = req.params;
+    
+    if (!contractAddress) {
+      return res.status(400).json({ 
+        error: 'contractAddress is required' 
+      });
+    }
+    
+    // Validate Ethereum address format
+    if (!/^0x[a-fA-F0-9]{40}$/.test(contractAddress)) {
+      return res.status(400).json({ 
+        error: 'Invalid Ethereum address format' 
+      });
+    }
+    
+    const success = await db.removeSambaContract(contractAddress);
+    
+    if (success) {
+      console.log(`✅ Removed samba contract: ${contractAddress}`);
+      res.json({ 
+        success: true, 
+        message: 'Samba contract removed successfully',
+        contractAddress: contractAddress.toLowerCase()
+      });
+    } else {
+      res.status(500).json({ 
+        error: 'Failed to remove samba contract' 
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ API Error removing samba contract:', error);
+    res.status(500).json({ 
+      error: 'Internal server error' 
+    });
+  }
+});
+
+app.get('/api/samba-contracts', async (req, res) => {
+  try {
+    const contracts = await db.getSambaContracts();
+    res.json({ 
+      success: true, 
+      contracts: contracts 
+    });
+  } catch (error) {
+    console.error('❌ API Error fetching samba contracts:', error);
+    res.status(500).json({ 
+      error: 'Internal server error' 
+    });
+  }
+});
+
+// Start the Express server
+app.listen(PORT, () => {
+  console.log(`�� API server running on port ${PORT}`);
+});
+
 
 const ZKP2P_GROUP_ID = 1310278446;
 const ZKP2P_TOPIC_ID = null;
@@ -1963,6 +2077,12 @@ const gracefulShutdown = async (signal) => {
       await bot.stopPolling();
     }
     
+    // Close Express server properly
+    if (app) {
+      console.log('🛑 Closing Express server...');
+      const server = app.listen().close();
+      await new Promise(resolve => server.on('close', resolve));
+    }
     // Close database connections (if any)
     console.log('🛑 Cleaning up resources...');
     
