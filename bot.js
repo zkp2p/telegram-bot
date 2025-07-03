@@ -1865,45 +1865,45 @@ const handleContractEvent = async (log) => {
       
       console.log('🧪 IntentSignaled depositId:', id);
       
-      intentDetails.set(intentHash.toLowerCase(), { fiatCurrency, conversionRate, verifier });
+//       intentDetails.set(intentHash.toLowerCase(), { fiatCurrency, conversionRate, verifier });
       
-      const interestedUsers = await db.getUsersInterestedInDeposit(id);
-      if (interestedUsers.length === 0) {
-        console.log('🚫 Ignored — no users interested in this depositId.');
-        return;
-      }
+//       const interestedUsers = await db.getUsersInterestedInDeposit(id);
+//       if (interestedUsers.length === 0) {
+//         console.log('🚫 Ignored — no users interested in this depositId.');
+//         return;
+//       }
 
-      console.log(`📤 Sending to ${interestedUsers.length} users interested in deposit ${id}`);
+//       console.log(`📤 Sending to ${interestedUsers.length} users interested in deposit ${id}`);
 
-      const message = `
-🟡 *Order Created*
-• *Deposit ID:* \`${id}\`
-• *Order ID:* \`${intentHash}\`
-• *Platform:* ${platformName}
-• *Owner:* \`${owner}\`
-• *To:* \`${to}\`
-• *Amount:* ${formatUSDC(amount)} USDC
-• *Fiat Amount:* ${fiatAmount} ${fiatCode} 
-• *Rate:* ${formattedRate}
-• *Time:* ${formatTimestamp(timestamp)}
-• *Block:* ${log.blockNumber}
-• *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
-`.trim();
+//       const message = `
+// 🟡 *Order Created*
+// • *Deposit ID:* \`${id}\`
+// • *Order ID:* \`${intentHash}\`
+// • *Platform:* ${platformName}
+// • *Owner:* \`${owner}\`
+// • *To:* \`${to}\`
+// • *Amount:* ${formatUSDC(amount)} USDC
+// • *Fiat Amount:* ${fiatAmount} ${fiatCode} 
+// • *Rate:* ${formattedRate}
+// • *Time:* ${formatTimestamp(timestamp)}
+// • *Block:* ${log.blockNumber}
+// • *Tx:* [View on BaseScan](${txLink(log.transactionHash)})
+// `.trim();
 
-      for (const chatId of interestedUsers) {
-        await db.updateDepositStatus(chatId, id, 'signaled', intentHash);
-        await db.logEventNotification(chatId, id, 'signaled');
+//       for (const chatId of interestedUsers) {
+//         await db.updateDepositStatus(chatId, id, 'signaled', intentHash);
+//         await db.logEventNotification(chatId, id, 'signaled');
         
-        const sendOptions = { 
-          parse_mode: 'Markdown', 
-          disable_web_page_preview: true,
-          reply_markup: createDepositKeyboard(id)
-        };
-        if (chatId === ZKP2P_GROUP_ID) {
-          sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
-        }
-        bot.sendMessage(chatId, message, sendOptions);
-      }
+//         const sendOptions = { 
+//           parse_mode: 'Markdown', 
+//           disable_web_page_preview: true,
+//           reply_markup: createDepositKeyboard(id)
+//         };
+//         if (chatId === ZKP2P_GROUP_ID) {
+//           sendOptions.message_thread_id = ZKP2P_TOPIC_ID;
+//         }
+//         bot.sendMessage(chatId, message, sendOptions);
+//       }
     }
 
 if (name === 'IntentFulfilled') {
