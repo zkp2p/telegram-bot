@@ -1,10 +1,11 @@
 {
   "name": "base-telegram-bot",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "src/main.js",
   "scripts": {
     "test": "node test-api.js",
-    "start": "node bot.js"
+    "start": "node src/main.js",
+    "start:old": "node bot.js"
   },
   "keywords": [],
   "author": "",
