@@ -5,7 +5,6 @@ const { supabase } = require('./database');
 const { createBot, initializeBot, registerAllCommands } = require('./bot');
 const { createBlockchainProvider } = require('./blockchain');
 const { startApiServer } = require('./api');
-const { checkSniperOpportunity } = require('./sniper');
 const { createContractEventHandler } = require('./bot/handlers');
 
 // Global variables
@@ -33,10 +32,8 @@ const initializeApplication = async () => {
     bot = await createBot();
     console.log('✅ Telegram bot created');
 
-    // Create event handler that includes sniper functionality
-    const eventHandler = createContractEventHandler(bot, (depositId, amount, currency, rate, verifier) => 
-      checkSniperOpportunity(depositId, amount, currency, rate, verifier, bot)
-    );
+    // Create event handler
+    const eventHandler = createContractEventHandler(bot);
 
     // Initialize blockchain provider
     resilientProvider = createBlockchainProvider(eventHandler);

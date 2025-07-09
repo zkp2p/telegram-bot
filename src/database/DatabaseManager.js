@@ -166,18 +166,8 @@ class DatabaseManager {
       })
       .eq('chat_id', chatId);
 
-    // Clear sniper settings too
-    const { error: error3 } = await this.supabase
-      .from('user_snipers')
-      .update({
-        is_active: false,
-        updated_at: timestamp
-      })
-      .eq('chat_id', chatId);
-
     if (error1) console.error('Error clearing user deposits:', error1);
     if (error2) console.error('Error clearing user settings:', error2);
-    if (error3) console.error('Error clearing user snipers:', error3);
   }
 
   // Log event notification (for analytics)
@@ -250,126 +240,6 @@ class DatabaseManager {
     };
   }
 
-  async removeUserSniper(chatId, currency = null, platform = null) {
-    let query = this.supabase
-      .from('user_snipers')
-      .update({
-        is_active: false,
-        updated_at: new Date().toISOString()
-      })
-      .eq('chat_id', chatId);
-
-    if (currency) {
-      query = query.eq('currency', currency.toUpperCase());
-    }
-
-    if (platform) {
-      query = query.eq('platform', platform.toLowerCase());
-    }
-
-    const { error } = await query;
-    if (error) console.error('Error removing sniper:', error);
-  }
-
-  async setUserSniper(chatId, currency, platform = null) {
-    // Always insert - no deactivation needed
-    const { error } = await this.supabase
-      .from('user_snipers')
-      .insert({
-        chat_id: chatId,
-        currency: currency.toUpperCase(),
-        platform: platform ? platform.toLowerCase() : null,
-        created_at: new Date().toISOString()
-      });
-
-    if (error) {
-      console.error('Error setting sniper:', error);
-      return false;
-    }
-    return true;
-  }
-
-  async getUserSnipers(chatId) {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-    const { data, error } = await this.supabase
-      .from('user_snipers')
-      .select('currency, platform, created_at')
-      .eq('chat_id', chatId)
-      .eq('is_active', true)
-      .gte('created_at', thirtyDaysAgo.toISOString())
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('Error fetching user snipers:', error);
-      return [];
-    }
-
-    // Deduplicate - keep only the newest entry for each currency+platform combo
-    const unique = new Map();
-    data.forEach(row => {
-      const key = `${row.currency}-${row.platform ?? 'all'}`; // ← Add fallback for null
-      const existing = unique.get(key);
-      if (!existing || new Date(row.created_at) > new Date(existing.created_at)) {
-        unique.set(key, row);
-      }
-    });
-
-    return Array.from(unique.values());
-  }
-
-  async getUsersWithSniper(currency, platform = null) {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-    let query = this.supabase
-      .from('user_snipers')
-      .select('chat_id, currency, platform, created_at')
-      .eq('currency', currency.toUpperCase())
-      .gte('created_at', thirtyDaysAgo.toISOString());
-
-    // If platform is specified, match exactly OR get users with null platform (all platforms)
-    if (platform) {
-      // Get users who either specified this platform OR want all platforms (null)
-      query = query.or(`platform.eq.${platform.toLowerCase()},platform.is.null`);
-    }
-
-    const { data, error } = await query;
-
-    if (error) {
-      console.error('Error fetching users with sniper:', error);
-      return [];
-    }
-
-    // Deduplicate by chat_id - if user has multiple entries, keep the newest
-    const userMap = new Map();
-    data.forEach(row => {
-      const existing = userMap.get(row.chat_id);
-      if (!existing || new Date(row.created_at) > new Date(existing.created_at)) {
-        userMap.set(row.chat_id, row);
-      }
-    });
-
-    return Array.from(userMap.keys()); // Return just the chat IDs
-  }
-
-  async logSniperAlert(chatId, depositId, currency, depositRate, marketRate, percentageDiff) {
-    const { error } = await this.supabase
-      .from('sniper_alerts')
-      .insert({
-        chat_id: chatId,
-        deposit_id: depositId,
-        currency: currency,
-        deposit_rate: depositRate,
-        market_rate: marketRate,
-        percentage_diff: percentageDiff,
-        sent_at: new Date().toISOString()
-      });
-
-    if (error) console.error('Error logging sniper alert:', error);
-  }
-
   async storeDepositAmount(depositId, amount) {
     // Also store in database for persistence
     const { error } = await this.supabase
@@ -399,37 +269,6 @@ class DatabaseManager {
     }
 
     return data?.amount || 0;
-  }
-
-  // Get user's global sniper threshold
-  async getUserThreshold(chatId) {
-    const { data, error } = await this.supabase
-      .from('user_settings')
-      .select('threshold')
-      .eq('chat_id', chatId)
-      .eq('is_active', true)
-      .single();
-
-    if (error && error.code !== 'PGRST116') {
-      console.error('Error getting user threshold:', error);
-    }
-    return data?.threshold || 0.2; // Default to 0.2% if not set
-  }
-
-  // Set user's global sniper threshold
-  async setUserThreshold(chatId, threshold) {
-    const { error } = await this.supabase
-      .from('user_settings')
-      .upsert({
-        chat_id: chatId,
-        threshold: threshold,
-        is_active: true,
-        updated_at: new Date().toISOString()
-      }, {
-        onConflict: 'chat_id'
-      });
-
-    if (error) console.error('Error setting user threshold:', error);
   }
 
   // add new samba contract to DB 

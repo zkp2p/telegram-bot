@@ -4,8 +4,8 @@ const { getFiatCode, formatConversionRate, formatUSDC, formatTimestamp, getPlatf
 const { ZKP2P_GROUP_ID, ZKP2P_TOPIC_ID } = require('../../config/constants');
 const { db } = require('../../database');
 
-// Event handler function - now with sniper support
-const createContractEventHandler = (bot, checkSniperOpportunity) => {
+// Event handler function
+const createContractEventHandler = (bot) => {
   return async (log) => {
     console.log('\n📦 Raw log received:');
     console.log(log);
@@ -147,12 +147,6 @@ const createContractEventHandler = (bot, checkSniperOpportunity) => {
 
         console.log(`📶 DepositCurrencyRateUpdated - ID: ${id}, ${platform}, ${fiatCode} rate updated to ${rate}`);
 
-        // Check for sniper opportunity with updated rate
-        const depositAmount = await db.getDepositAmount(id);
-        if (depositAmount > 0) {
-          console.log(`🎯 Rechecking sniper opportunity due to rate update for deposit ${id}`);
-          await checkSniperOpportunity(id, depositAmount, currency, conversionRate, verifier);
-        }
       }
 
       if (name === 'DepositConversionRateUpdated') {
@@ -164,31 +158,22 @@ const createContractEventHandler = (bot, checkSniperOpportunity) => {
 
         console.log(`📶 DepositConversionRateUpdated - ID: ${id}, ${platform}, ${fiatCode} rate updated to ${rate}`);
 
-        // Check for sniper opportunity with updated rate
-        const depositAmount = await db.getDepositAmount(id);
-        if (depositAmount > 0) {
-          console.log(`🎯 Rechecking sniper opportunity due to conversion rate update for deposit ${id}`);
-          await checkSniperOpportunity(id, depositAmount, currency, newConversionRate, verifier);
-        }
       }
 
       if (name === 'DepositReceived') {
         await eventProcessors.handleDepositReceived(parsed, log, db, bot);
       }
 
-      // NEW: Handle DepositCurrencyAdded for sniper functionality
+      // Handle DepositCurrencyAdded
       if (name === 'DepositCurrencyAdded') {
         const { depositId, verifier, currency, conversionRate } = parsed.args;
         const id = Number(depositId);
 
-        console.log('🎯 DepositCurrencyAdded detected:', id);
+        console.log('📦 DepositCurrencyAdded detected:', id);
 
         // Get the actual deposit amount
         const depositAmount = await db.getDepositAmount(id);
         console.log(`💰 Retrieved deposit amount: ${depositAmount} (${formatUSDC(depositAmount)} USDC)`);
-
-        // Check for sniper opportunity with real amount
-        await checkSniperOpportunity(id, depositAmount, currency, conversionRate, verifier);
       }
 
     } catch (err) {

@@ -3,6 +3,8 @@ const env = require('./environment');
 // Telegram Group and Topic IDs
 const ATTESTED_GROUP_ID = -1002704258770;
 const SAMBA_TOPIC_ID = 5;
+const ZKP2P_GROUP_ID = 1310278446;
+const ZKP2P_TOPIC_ID = null;
 
 // ZKP2P Escrow contract on Base
 const CONTRACT_ADDRESS = '0xca38607d85e8f6294dc10728669605e6664c2d70';
@@ -51,16 +53,15 @@ const CURRENCY_HASH_TO_CODE = {
   '0x8fd50654b7dd2dc839f7cab32800ba0c6f7f66e1ccf89b21c09405469c2175ec': 'ARS'
 };
 
-// Supported platforms for snipers
-const SUPPORTED_PLATFORMS = ['revolut', 'wise', 'cashapp', 'venmo', 'zelle'];
 
 module.exports = {
   ATTESTED_GROUP_ID,
   SAMBA_TOPIC_ID,
+  ZKP2P_GROUP_ID,
+  ZKP2P_TOPIC_ID,
   CONTRACT_ADDRESS,
   EXCHANGE_API_URL,
   RATES_CACHE_DURATION,
   VERIFIER_MAPPING,
-  CURRENCY_HASH_TO_CODE,
-  SUPPORTED_PLATFORMS
+  CURRENCY_HASH_TO_CODE
 };
