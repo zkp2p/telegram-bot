@@ -315,7 +315,7 @@ class DatabaseManager {
 
     return data || [];
   }
-
+  
   async isSambaContract(contractAddress) {
     const { data, error } = await this.supabase
       .from('samba_contracts')

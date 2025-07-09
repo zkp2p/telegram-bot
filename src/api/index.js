@@ -24,7 +24,7 @@ function startApiServer() {
   const app = createApiServer();
   
   // Start the Express server
-  const server = app.listen(config.PORT, () => {
+  const server = app.listen(config.PORT, '0.0.0.0', () => {
     console.log(`🌐 API server running on port ${config.PORT}`);
   });
 

@@ -34,15 +34,23 @@ router.post('/add-contract', verifySignature, async (req, res) => {
       });
     }
 
+    // check if contract already exists
+    const existingContract = await db.isSambaContract(contract);
+    if (existingContract) {
+      console.log(`🔍 Samba contract already exists: ${contract}`);
+      return res.status(200).json({
+        success: true,
+        message: 'Samba contract already exists',
+      });
+    }
+
     const success = await db.addSambaContract(contract, user);
 
     if (success) {
       console.log(`✅ Added samba contract: ${contract} for user ${user}`);
-      res.json({
+      res.status(201).json({
         success: true,
         message: 'Samba contract added successfully',
-        contractAddress: contract.toLowerCase(),
-        user
       });
     } else {
       res.status(500).json({
