@@ -18,5 +18,11 @@ module.exports = {
   SAMBA_BACKEND_PUBLIC_KEY: process.env.SAMBA_BACKEND_PUBLIC_KEY,
   
   // Server
-  PORT: process.env.PORT || 3001
+  PORT: process.env.PORT || 3001,
+
+  // Domain used for SSL path
+  DOMAIN: process.env.DOMAIN,
+  
+  // Environment
+  PRODUCTION: process.env.PRODUCTION === "true" ? true : false,
 };
