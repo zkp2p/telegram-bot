@@ -26,18 +26,18 @@ async function initializeBot(bot) {
     await new Promise(resolve => setTimeout(resolve, 3000));
 
     console.log('📝 Initializing user in database...');
-    await db.initUser(config.ZKP2P_GROUP_ID, 'zkp2p_channel');
+    await db.initUser(config.ATTESTED_GROUP_ID, 'samba_channel');
 
     console.log('📝 Setting listen all to true...');
-    await db.setUserListenAll(config.ZKP2P_GROUP_ID, true);
-    await db.setUserThreshold(config.ZKP2P_GROUP_ID, 0.1);
+    // await db.setUserListenAll(config.ATTESTED_GROUP_ID, true);
+    // await db.setUserThreshold(config.SAMBA_TOPIC_ID, 0.1);
 
-    console.log(`📤 Attempting to send message to topic ${config.ZKP2P_TOPIC_ID} in group ${config.ZKP2P_GROUP_ID}`);
+    console.log(`📤 Attempting to send message to topic ${config.ATTESTED_GROUP_ID} in group ${config.SAMBA_TOPIC_ID}`);
 
     // Test message sending with better error handling
-    const result = await bot.sendMessage(config.ZKP2P_GROUP_ID, '🔄 Bot restarted and ready!', {
+    const result = await bot.sendMessage(config.ATTESTED_GROUP_ID, '🤖 Samba Bot is online!', {
+      message_thread_id: config.SAMBA_TOPIC_ID,
       parse_mode: 'Markdown',
-      //message_thread_id: config.ZKP2P_TOPIC_ID,
     });
 
     console.log('✅ Initialization message sent successfully!');

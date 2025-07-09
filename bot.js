@@ -660,20 +660,20 @@ app.post('/api/add-contract', verifySignature, async (req, res) => {
 //   }
 // });
 
-// app.get('/api/samba-contracts', verifySignature, async (req, res) => {
-//   try {
-//     const contracts = await db.getSambaContracts();
-//     res.json({
-//       success: true,
-//       contracts: contracts
-//     });
-//   } catch (error) {
-//     console.error('❌ API Error fetching samba contracts:', error);
-//     res.status(500).json({
-//       error: 'Internal server error'
-//     });
-//   }
-// });
+app.get('/api/samba-contracts', verifySignature, async (req, res) => {
+  try {
+    const contracts = await db.getSambaContracts();
+    res.json({
+      success: true,
+      contracts: contracts
+    });
+  } catch (error) {
+    console.error('❌ API Error fetching samba contracts:', error);
+    res.status(500).json({
+      error: 'Internal server error'
+    });
+  }
+});
 
 // Start the Express server
 app.listen(PORT, () => {

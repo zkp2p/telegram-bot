@@ -1,9 +1,8 @@
 const env = require('./environment');
 
-// ZKP2P Group and Topic IDs
-const ZKP2P_GROUP_ID = 1310278446;
-const ZKP2P_TOPIC_ID = null;
-const ZKP2P_SNIPER_TOPIC_ID = null;
+// Telegram Group and Topic IDs
+const ATTESTED_GROUP_ID = -1002704258770;
+const SAMBA_TOPIC_ID = 5;
 
 // ZKP2P Escrow contract on Base
 const CONTRACT_ADDRESS = '0xca38607d85e8f6294dc10728669605e6664c2d70';
@@ -56,9 +55,8 @@ const CURRENCY_HASH_TO_CODE = {
 const SUPPORTED_PLATFORMS = ['revolut', 'wise', 'cashapp', 'venmo', 'zelle'];
 
 module.exports = {
-  ZKP2P_GROUP_ID,
-  ZKP2P_TOPIC_ID,
-  ZKP2P_SNIPER_TOPIC_ID,
+  ATTESTED_GROUP_ID,
+  SAMBA_TOPIC_ID,
   CONTRACT_ADDRESS,
   EXCHANGE_API_URL,
   RATES_CACHE_DURATION,

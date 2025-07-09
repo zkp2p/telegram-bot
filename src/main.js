@@ -16,7 +16,7 @@ let apiServer;
 // Main initialization function
 const initializeApplication = async () => {
   try {
-    console.log('🤖 ZKP2P Telegram Bot Started (Refactored Architecture)');
+    console.log('🤖 Samba Market Maker Telegram Bot Started');
     console.log('🔍 Initializing all modules...');
 
     // Test database connection first
@@ -32,10 +32,6 @@ const initializeApplication = async () => {
     // Create and initialize bot
     bot = await createBot();
     console.log('✅ Telegram bot created');
-
-    // Register all commands
-    registerAllCommands(bot, resilientProvider);
-    console.log('✅ Bot commands registered');
 
     // Create event handler that includes sniper functionality
     const eventHandler = createContractEventHandler(bot, (depositId, amount, currency, rate, verifier) => 
