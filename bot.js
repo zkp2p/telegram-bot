@@ -1064,16 +1064,14 @@ async function sendPrunedNotification(rawIntent, txHash) {
 
 
 
-
-
-
-
 // Verifier address to platform mapping
 const verifierMapping = {
   '0x76d33a33068d86016b806df02376ddbb23dd3703': { platform: 'cashapp', isUsdOnly: true },
   '0x9a733b55a875d0db4915c6b36350b24f8ab99df5': { platform: 'venmo', isUsdOnly: true },
   '0xaa5a1b62b01781e789c900d616300717cd9a41ab': { platform: 'revolut', isUsdOnly: false },
   '0xff0149799631d7a5bde2e7ea9b306c42b3d9a9ca': { platform: 'wise', isUsdOnly: false },
+  '0x03d17E9371C858072E171276979f6B44571C5DeA': { platform: 'paypal', isUsdOnly: false },
+  '0x0dE46433bD251027f73eD8f28E01eF05DA36a2E0': { platform: 'monzo', isUsdOnly: false },
   '0xf2ac5be14f32cbe6a613cff8931d95460d6c33a3': { platform: 'mercado pago', isUsdOnly: false },
   '0x431a078a5029146aab239c768a615cd484519af7': { platform: 'zelle', isUsdOnly: true }
 
