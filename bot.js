@@ -1461,7 +1461,7 @@ bot.onText(/\/sniper (?!threshold)(.+)/, async (msg, match) => {
   const platform = parts[1] ? parts[1].toLowerCase() : null;
   
   const supportedCurrencies = Object.values(currencyHashToCode);
-  const supportedPlatforms = ['revolut', 'wise', 'cashapp', 'venmo', 'zelle'];
+  const supportedPlatforms = ['revolut', 'wise', 'cashapp', 'venmo', 'zelle', 'mercado pago', 'monzo'];
   
   if (!supportedCurrencies.includes(currency)) {
     bot.sendMessage(chatId, `❌ Currency '${currency}' not supported.\n\n*Supported currencies:*\n${supportedCurrencies.join(', ')}`, { parse_mode: 'Markdown' });
@@ -1578,7 +1578,7 @@ const createSettingsMenu = () => {
 };
 
 const createCurrencyKeyboard = () => {
-  const currencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'CHF', 'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'HUF', 'RON'];
+  const currencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'CHF', 'ARS', 'NOK', 'DKK', 'PLN', 'CZK', 'NZD', 'RON'];
   const keyboard = [];
   
   // Create rows of 3 currencies each
@@ -1616,6 +1616,10 @@ const createPlatformKeyboard = (currency) => {
       [
         { text: '📱 CashApp', callback_data: `sniper_${currency}_cashapp` },
         { text: '💸 Venmo', callback_data: `sniper_${currency}_venmo` }
+      ],
+      [
+        { text: '🏦 Mercado Pago', callback_data: `sniper_${currency}_mercado pago` },
+        { text: '💸 Monzo', callback_data: `sniper_${currency}_monzo` }
       ],
       [
         { text: '🔙 Back to Currencies', callback_data: 'prompt_sniper_add' }
@@ -1780,7 +1784,7 @@ bot.on('callback_query', async (callbackQuery) => {
     }
 
     else if (data === 'show_more_currencies') {
-      const moreCurrencies = ['AED', 'ARS', 'CNY', 'ILS', 'INR', 'KES', 'MXN', 'MYR', 'PHP', 'SAR', 'SGD', 'THB', 'TRY', 'VND', 'ZAR'];
+      const moreCurrencies = ['AED', 'CNY', 'SEK', 'ILS', 'INR', 'KES', 'MXN', 'HKD', 'MYR', 'PHP', 'SAR', 'SGD', 'HUF', 'THB', 'TRY', 'VND', 'IDR', 'ZAR'];
       const keyboard = [];
       
       for (let i = 0; i < moreCurrencies.length; i += 3) {
