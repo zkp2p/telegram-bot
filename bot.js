@@ -1461,7 +1461,7 @@ bot.onText(/\/sniper (?!threshold)(.+)/, async (msg, match) => {
   const platform = parts[1] ? parts[1].toLowerCase() : null;
   
   const supportedCurrencies = Object.values(currencyHashToCode);
-  const supportedPlatforms = ['revolut', 'wise', 'cashapp', 'venmo', 'zelle', 'mercado pago', 'monzo'];
+  const supportedPlatforms = ['revolut', 'wise', 'cashapp', 'venmo', 'zelle', 'mercado pago', 'monzo','paypal'];
   
   if (!supportedCurrencies.includes(currency)) {
     bot.sendMessage(chatId, `❌ Currency '${currency}' not supported.\n\n*Supported currencies:*\n${supportedCurrencies.join(', ')}`, { parse_mode: 'Markdown' });
@@ -1620,6 +1620,9 @@ const createPlatformKeyboard = (currency) => {
       [
         { text: '🏦 Mercado Pago', callback_data: `sniper_${currency}_mercado pago` },
         { text: '💸 Monzo', callback_data: `sniper_${currency}_monzo` }
+      ],
+      [
+      { text: '💸 PayPal', callback_data: `sniper_${currency}_paypal` }
       ],
       [
         { text: '🔙 Back to Currencies', callback_data: 'prompt_sniper_add' }
