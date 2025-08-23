@@ -19,6 +19,10 @@ const intentDetails = new Map();
 
 // Database helper functions
 class DatabaseManager {
+  // Helper function to format timestamps for PostgreSQL (without timezone)
+  _formatTimestamp(date) {
+    return date.toISOString().replace('T', ' ').replace('Z', '');
+  }
   // Initialize user if not exists
   async initUser(chatId, username = null, firstName = null, lastName = null) {
     const { data, error } = await supabase
@@ -50,8 +54,12 @@ class DatabaseManager {
       console.error('Error fetching user deposits:', error);
       return new Set();
     }
-    
-    return new Set(data.map(row => row.deposit_id));
+
+    if (!data || data.length === 0) {
+      return new Set();
+    }
+
+    return new Set(data.map(row => parseInt(row.deposit_id)));
   }
 
   // Get user's ACTIVE deposit states only
@@ -66,10 +74,14 @@ class DatabaseManager {
       console.error('Error fetching user deposit states:', error);
       return new Map();
     }
-    
+
+    if (!data || data.length === 0) {
+      return new Map();
+    }
+
     const statesMap = new Map();
     data.forEach(row => {
-      statesMap.set(row.deposit_id, {
+      statesMap.set(parseInt(row.deposit_id), {
         status: row.status,
         intentHash: row.intent_hash
       });
@@ -80,38 +92,114 @@ class DatabaseManager {
 
   // Add deposit for user (always creates as active)
   async addUserDeposit(chatId, depositId) {
-    const { error } = await supabase
-      .from('user_deposits')
-      .upsert({ 
-        chat_id: chatId, 
-        deposit_id: depositId,
-        status: 'tracking',
-        is_active: true, // Explicitly set as active
-        created_at: new Date().toISOString()
-      }, { 
-        onConflict: 'chat_id,deposit_id' 
-      });
-    
-    if (error) console.error('Error adding deposit:', error);
+    // Validate inputs
+    if (!chatId || !depositId) {
+      console.error('Error: Missing chatId or depositId');
+      return false;
+    }
+
+    // Ensure depositId is a valid integer
+    const depositIdInt = parseInt(depositId);
+    if (isNaN(depositIdInt) || depositIdInt <= 0) {
+      console.error('Error: Invalid depositId, must be a positive integer');
+      return false;
+    }
+
+    try {
+      // First, try to update existing record if it exists
+      const { data: updateData, error: updateError } = await supabase
+        .from('user_deposits')
+        .update({
+          status: 'tracking',
+          is_active: true,
+          updated_at: new Date().toISOString()
+        })
+        .eq('chat_id', chatId)
+        .eq('deposit_id', depositIdInt)
+        .select();
+
+      if (updateError) {
+        console.error('Error updating deposit:', updateError);
+        return false;
+      }
+
+      // If no rows were updated, insert a new record
+      if (!updateData || updateData.length === 0) {
+        const { data: insertData, error: insertError } = await supabase
+          .from('user_deposits')
+          .insert({
+            chat_id: chatId,
+            deposit_id: depositIdInt,
+            status: 'tracking',
+            is_active: true,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+
+        if (insertError) {
+          console.error('Error inserting deposit:', insertError);
+          return false;
+        }
+      }
+
+      console.log(`✅ Successfully added deposit ${depositIdInt} for user ${chatId}`);
+      return true;
+
+    } catch (error) {
+      console.error('Error in addUserDeposit:', error);
+      return false;
+    }
   }
 
   // Remove deposit - mark as inactive instead of deleting
   async removeUserDeposit(chatId, depositId) {
-    const { error } = await supabase
+    // Validate inputs
+    if (!chatId || !depositId) {
+      console.error('Error: Missing chatId or depositId');
+      return false;
+    }
+
+    // Ensure depositId is a valid integer
+    const depositIdInt = parseInt(depositId);
+    if (isNaN(depositIdInt) || depositIdInt <= 0) {
+      console.error('Error: Invalid depositId, must be a positive integer');
+      return false;
+    }
+
+    const { data, error } = await supabase
       .from('user_deposits')
-      .update({ 
+      .update({
         is_active: false,
         updated_at: new Date().toISOString()
       })
       .eq('chat_id', chatId)
-      .eq('deposit_id', depositId);
-    
-    if (error) console.error('Error removing deposit:', error);
+      .eq('deposit_id', depositIdInt);
+
+    if (error) {
+      console.error('Error removing deposit:', error);
+      return false;
+    }
+
+    console.log(`✅ Successfully removed deposit ${depositIdInt} for user ${chatId}`);
+    return true;
   }
 
   // Update deposit status (only for active deposits)
   async updateDepositStatus(chatId, depositId, status, intentHash = null) {
-    const updateData = { 
+    // Validate inputs
+    if (!chatId || !depositId || !status) {
+      console.error('Error: Missing chatId, depositId, or status');
+      return false;
+    }
+
+    // Ensure depositId is a valid integer
+    const depositIdInt = parseInt(depositId);
+    if (isNaN(depositIdInt) || depositIdInt <= 0) {
+      console.error('Error: Invalid depositId, must be a positive integer');
+      return false;
+    }
+
+    const updateData = {
       status: status,
       updated_at: new Date().toISOString()
     };
@@ -120,14 +208,20 @@ class DatabaseManager {
       updateData.intent_hash = intentHash;
     }
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('user_deposits')
       .update(updateData)
       .eq('chat_id', chatId)
-      .eq('deposit_id', depositId)
+      .eq('deposit_id', depositIdInt)
       .eq('is_active', true); // Only update active deposits
-    
-    if (error) console.error('Error updating deposit status:', error);
+
+    if (error) {
+      console.error('Error updating deposit status:', error);
+      return false;
+    }
+
+    console.log(`✅ Successfully updated deposit ${depositIdInt} status to ${status} for user ${chatId}`);
+    return true;
   }
 
   // Get ACTIVE listen all preference only
@@ -183,11 +277,13 @@ class DatabaseManager {
       .eq('chat_id', chatId);
 
     // Clear sniper settings too
+    const now = new Date();
+    const sniperTimestamp = this._formatTimestamp(now);
     const { error: error3 } = await supabase
       .from('user_snipers')
-      .update({ 
+      .update({
         is_active: false,
-        updated_at: timestamp
+        updated_at: sniperTimestamp
       })
       .eq('chat_id', chatId);
     
@@ -267,61 +363,88 @@ class DatabaseManager {
   }
   
 async removeUserSniper(chatId, currency = null, platform = null) {
+  const now = new Date();
+  const timestamp = this._formatTimestamp(now);
+
   let query = supabase
     .from('user_snipers')
-    .update({ 
+    .update({
       is_active: false,
-      updated_at: new Date().toISOString()
+      updated_at: timestamp
     })
     .eq('chat_id', chatId);
-  
+
   if (currency) {
     query = query.eq('currency', currency.toUpperCase());
   }
-  
+
   if (platform) {
     query = query.eq('platform', platform.toLowerCase());
   }
-  
+
   const { error } = await query;
   if (error) console.error('Error removing sniper:', error);
 }
 
 async setUserSniper(chatId, currency, platform = null) {
   // Always insert - no deactivation needed
-  const { error } = await supabase
+  const now = new Date();
+  const timestamp = this._formatTimestamp(now);
+
+  // First, try to deactivate any existing snipers for this currency/platform combo
+  let deactivateQuery = supabase
     .from('user_snipers')
-    .insert({
-      chat_id: chatId,
-      currency: currency.toUpperCase(),
-      platform: platform ? platform.toLowerCase() : null,
-      created_at: new Date().toISOString()
-    });
-  
-  if (error) {
-    console.error('Error setting sniper:', error);
-    return false;
+    .update({ is_active: false, updated_at: timestamp })
+    .eq('chat_id', chatId)
+    .eq('currency', currency.toUpperCase())
+    .eq('is_active', true);
+
+  if (platform !== null) {
+    deactivateQuery = deactivateQuery.eq('platform', platform.toLowerCase());
+  } else {
+    deactivateQuery = deactivateQuery.is('platform', null);
   }
-  return true;
+
+  await deactivateQuery;
+
+  // Now insert the new sniper
+  const { error } = await supabase
+   .from('user_snipers')
+   .insert({
+     chat_id: chatId,
+     currency: currency.toUpperCase(),
+     platform: platform ? platform.toLowerCase() : null,
+     is_active: true,
+     created_at: timestamp,
+     updated_at: timestamp
+   });
+
+ if (error) {
+   console.error('Error setting sniper:', error);
+   return false;
+ }
+ return true;
 }
 
 async getUserSnipers(chatId) {
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  
+  // Format date to match PostgreSQL timestamp without time zone format
+  const thirtyDaysAgoFormatted = this._formatTimestamp(thirtyDaysAgo);
+
   const { data, error } = await supabase
     .from('user_snipers')
     .select('currency, platform, created_at')
     .eq('chat_id', chatId)
-    .eq('is_active', true) 
-    .gte('created_at', thirtyDaysAgo.toISOString())
+    .eq('is_active', true)
+    .gte('created_at', thirtyDaysAgoFormatted)
     .order('created_at', { ascending: false });
-  
+
   if (error) {
     console.error('Error fetching user snipers:', error);
     return [];
   }
-  
+
   // Deduplicate - keep only the newest entry for each currency+platform combo
   const unique = new Map();
   data.forEach(row => {
@@ -338,26 +461,28 @@ async getUserSnipers(chatId) {
   async getUsersWithSniper(currency, platform = null) {
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  
+  // Format date to match PostgreSQL timestamp without time zone format
+  const thirtyDaysAgoFormatted = this._formatTimestamp(thirtyDaysAgo);
+
   let query = supabase
     .from('user_snipers')
     .select('chat_id, currency, platform, created_at')
     .eq('currency', currency.toUpperCase())
-    .gte('created_at', thirtyDaysAgo.toISOString());
-  
+    .gte('created_at', thirtyDaysAgoFormatted);
+
   // If platform is specified, match exactly OR get users with null platform (all platforms)
   if (platform) {
     // Get users who either specified this platform OR want all platforms (null)
     query = query.or(`platform.eq.${platform.toLowerCase()},platform.is.null`);
   }
-  
+
   const { data, error } = await query;
-  
+
   if (error) {
     console.error('Error fetching users with sniper:', error);
     return [];
   }
-  
+
   // Deduplicate by chat_id - if user has multiple entries, keep the newest
   const userMap = new Map();
   data.forEach(row => {
@@ -366,7 +491,7 @@ async getUserSnipers(chatId) {
       userMap.set(row.chat_id, row);
     }
   });
-  
+
   return Array.from(userMap.keys()); // Return just the chat IDs
 }
 
@@ -387,41 +512,88 @@ async getUserSnipers(chatId) {
   }
 
   async storeDepositAmount(depositId, amount) {
-  // Store in memory for quick access
-    depositAmounts.set(Number(depositId), Number(amount));
-  
+  // Validate inputs
+  if (!depositId || !amount) {
+    console.error('Error: Missing depositId or amount');
+    return false;
+  }
+
+  // Ensure depositId is a valid integer (for deposit_amounts table which uses bigint)
+  const depositIdInt = parseInt(depositId);
+  if (isNaN(depositIdInt) || depositIdInt <= 0) {
+    console.error('Error: Invalid depositId, must be a positive integer');
+    return false;
+  }
+
+  // Ensure amount is a valid number
+  const amountNum = Number(amount);
+  if (isNaN(amountNum) || amountNum <= 0) {
+    console.error('Error: Invalid amount, must be a positive number');
+    return false;
+  }
+
+  // Store in memory for quick access (keep original decimal value)
+  depositAmounts.set(depositIdInt, amountNum);
+
+  // Convert to integer for database storage (multiply by 100 to store cents)
+  // This is because the schema defines amount as bigint, not decimal
+  const amountInt = Math.round(amountNum * 100);
+
   // Also store in database for persistence
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from('deposit_amounts')
-    .upsert({ 
-      deposit_id: Number(depositId),
-      amount: Number(amount),
+    .upsert({
+      deposit_id: depositIdInt,
+      amount: amountInt,
       created_at: new Date().toISOString()
-    }, { 
-      onConflict: 'deposit_id' 
+    }, {
+      onConflict: 'deposit_id'
     });
-  
-    if (error) console.error('Error storing deposit amount:', error);
+
+    if (error) {
+      console.error('Error storing deposit amount:', error);
+      return false;
+    }
+
+    console.log(`✅ Successfully stored amount ${amountNum} (as ${amountInt} cents) for deposit ${depositIdInt}`);
+    return true;
   }
 
   async getDepositAmount(depositId) {
+  // Validate input
+  if (!depositId) {
+    console.error('Error: Missing depositId');
+    return 0;
+  }
+
+  // Ensure depositId is a valid integer
+  const depositIdInt = parseInt(depositId);
+  if (isNaN(depositIdInt) || depositIdInt <= 0) {
+    console.error('Error: Invalid depositId, must be a positive integer');
+    return 0;
+  }
+
   // Try memory first
-    const memoryAmount = depositAmounts.get(Number(depositId));
-    if (memoryAmount) return memoryAmount;
-  
+  const memoryAmount = depositAmounts.get(depositIdInt);
+  if (memoryAmount !== undefined) return memoryAmount;
+
   // Fall back to database
     const { data, error } = await supabase
       .from('deposit_amounts')
       .select('amount')
-      .eq('deposit_id', Number(depositId))
+      .eq('deposit_id', depositIdInt)
       .single();
-  
+
     if (error) {
-      console.error('Error getting deposit amount:', error);
+      if (error.code !== 'PGRST116') { // PGRST116 = no rows returned
+        console.error('Error getting deposit amount:', error);
+      }
       return 0;
     }
-  
-    return data?.amount || 0;
+
+    // Convert from cents back to decimal
+    const storedAmount = data?.amount || 0;
+    return storedAmount / 100;
   }
 // Get user's global sniper threshold
 async getUserThreshold(chatId) {
