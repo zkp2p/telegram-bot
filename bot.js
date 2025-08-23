@@ -1244,7 +1244,7 @@ const verifierMapping = {
   '0xff0149799631d7a5bde2e7ea9b306c42b3d9a9ca': { platform: 'wise', isUsdOnly: false },
   '0x03d17e9371c858072e171276979f6b44571c5dea': { platform: 'paypal', isUsdOnly: false },
   '0x0de46433bd251027f73ed8f28e01ef05da36a2e0': { platform: 'monzo', isUsdOnly: false },
-  '0xf2ac5be14f32cbe6a613cff8931d95460d6c33a3': { platform: 'mercado pago', isUsdOnly: false },
+  '0xf2ac5be14f32cbe6a613cff8931d95460d6c33a3': { platform: 'mercadopago', isUsdOnly: false },
   '0x431a078a5029146aab239c768a615cd484519af7': { platform: 'zelle', isUsdOnly: true }
 
 };
@@ -1633,7 +1633,7 @@ bot.onText(/\/sniper (?!threshold)(.+)/, async (msg, match) => {
   const platform = parts[1] ? parts[1].toLowerCase() : null;
   
   const supportedCurrencies = Object.values(currencyHashToCode);
-  const supportedPlatforms = ['revolut', 'wise', 'cashapp', 'venmo', 'zelle', 'mercado pago', 'monzo','paypal'];
+  const supportedPlatforms = ['revolut', 'wise', 'cashapp', 'venmo', 'zelle', 'mercadopago', 'monzo','paypal'];
   
   if (!supportedCurrencies.includes(currency)) {
     bot.sendMessage(chatId, `❌ Currency '${currency}' not supported.\n\n*Supported currencies:*\n${supportedCurrencies.join(', ')}`, { parse_mode: 'Markdown' });
@@ -1790,7 +1790,7 @@ const createPlatformKeyboard = (currency) => {
         { text: '💸 Venmo', callback_data: `sniper_${currency}_venmo` }
       ],
       [
-        { text: '🏦 Mercado Pago', callback_data: `sniper_${currency}_mercado pago` },
+        { text: '🏦 Mercado Pago', callback_data: `sniper_${currency}_mercadopago` },
         { text: '💸 Monzo', callback_data: `sniper_${currency}_monzo` }
       ],
       [
